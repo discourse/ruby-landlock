@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
 
   spec.summary = "Ruby bindings for Linux Landlock sandboxing"
   spec.description = "Native Ruby wrappers for Linux Landlock with filesystem and TCP port restrictions for safe subprocess execution."
-  spec.homepage = "https://github.com/sam-saffron/landlock"
+  spec.homepage = "https://github.com/sam-saffron-jarvis/landlock"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1"
 
