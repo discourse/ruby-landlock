@@ -33,6 +33,8 @@ class LandlockTest < Minitest::Test
   end
 
   def test_child_setup_failure_does_not_run_inherited_at_exit_handlers
+    skip "Landlock unsupported" unless Landlock.supported?
+
     Dir.mktmpdir do |dir|
       marker = File.join(dir, "at_exit_ran")
       script = <<~RUBY
@@ -497,24 +499,33 @@ class LandlockTest < Minitest::Test
   end
 
   def test_safe_exec_output_limit_counts_stdout_and_stderr_together
+    capture_method = Landlock::SafeExec.send(:helper_available?) ? :capture_process : :capture_process_without_helper
+    capture_options = if capture_method == :capture_process
+      {
+        read: runtime_paths,
+        write: [],
+        execute: runtime_paths,
+        connect_tcp: nil,
+        bind_tcp: [],
+        seccomp_deny_network: false,
+        allow_all_known: true
+      }
+    else
+      {}
+    end
+
     stdout, stderr, _status, truncated = Landlock::SafeExec.send(
-      :capture_process,
+      capture_method,
       [RbConfig.ruby, "--disable=gems", "-e", "$stdout.print('o' * 8); $stderr.print('e' * 8)"],
-      read: runtime_paths,
-      write: [],
-      execute: runtime_paths,
+      **capture_options,
       timeout: nil,
       env: { "PATH" => ENV.fetch("PATH", "") },
       inherit_env: false,
       stdin: nil,
       chdir: nil,
-      connect_tcp: nil,
-      bind_tcp: [],
       rlimits: {},
-      seccomp_deny_network: false,
       max_output_bytes: 10,
-      truncate_output: true,
-      allow_all_known: true
+      truncate_output: true
     )
 
     assert truncated
@@ -626,7 +637,7 @@ class LandlockTest < Minitest::Test
         chdir: dir
       )
 
-      assert_equal dir, output.stdout
+      assert_equal File.realpath(dir), output.stdout
     end
   end
 
@@ -700,6 +711,8 @@ class LandlockTest < Minitest::Test
   end
 
   def test_safe_exec_applies_memory_rlimit
+    skip "RLIMIT_AS is not portable on macOS" if RUBY_PLATFORM.include?("darwin")
+
     memory_limit = 8 * 1024 * 1024 * 1024
     output = Landlock::SafeExec.capture(
       RbConfig.ruby,
@@ -1164,7 +1177,7 @@ class LandlockTest < Minitest::Test
           max_output_bytes: 1_024
         )
 
-        assert_equal "#{dir}:child:false:32", output.stdout
+        assert_equal "#{File.realpath(dir)}:child:false:32", output.stdout
       end
     end
   ensure

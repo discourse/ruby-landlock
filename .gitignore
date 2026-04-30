@@ -6,3 +6,4 @@
 *.o
 /mkmf.log
 Gemfile.lock
+/lib/landlock/landlock.bundle

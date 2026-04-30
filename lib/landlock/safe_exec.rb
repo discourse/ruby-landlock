@@ -92,6 +92,8 @@ module Landlock
         allow_all_known: true,
         raise_on_failure:
       )
+        validate_sandbox_option_values!(connect_tcp: connect_tcp, bind_tcp: bind_tcp)
+
         unsupported_options = unsupported_sandbox_options(
           read: read,
           write: write,
@@ -185,6 +187,11 @@ module Landlock
 
       def helper_available?
         RUBY_PLATFORM.include?("linux") && File.executable?(helper_path)
+      end
+
+      def validate_sandbox_option_values!(connect_tcp:, bind_tcp:)
+        normalized_ports(connect_tcp, :connect_tcp) if !connect_tcp.nil?
+        normalized_ports(bind_tcp, :bind_tcp)
       end
 
       def unsupported_sandbox_options(read:, write:, execute:, connect_tcp:, bind_tcp:, seccomp_deny_network:)
