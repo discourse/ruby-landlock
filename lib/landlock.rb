@@ -41,12 +41,18 @@ module Landlock
     connect_tcp: ACCESS_NET_CONNECT_TCP
   }.freeze
 
+  SCOPE_FLAGS = {
+    abstract_unix_socket: SCOPE_ABSTRACT_UNIX_SOCKET,
+    signal: SCOPE_SIGNAL
+  }.freeze
+
   READ_RIGHTS = %i[read_file read_dir].freeze
   EXEC_RIGHTS = %i[execute read_file read_dir].freeze
   WRITE_RIGHTS = %i[
     read_file read_dir write_file truncate remove_dir remove_file make_char
     make_dir make_reg make_sock make_fifo make_block make_sym refer
   ].freeze
+  FILE_PATH_RIGHTS = %i[execute write_file read_file truncate ioctl_dev].freeze
 
   module_function
 
@@ -56,18 +62,19 @@ module Landlock
     false
   end
 
-  def restrict!(read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], allow_all_known: false)
+  def restrict!(read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], scope: [], allow_all_known: false)
     abi = abi_version
     raise UnsupportedError, "Linux Landlock is unavailable" unless abi.positive?
 
     fs_handled = allow_all_known ? _fs_rights_for_abi(abi) : _handled_fs_for(read:, write:, execute:, paths:, abi:)
     net_handled = _handled_net_for(connect_tcp:, bind_tcp:, abi:)
+    scoped = _scope_for(scope:, abi:)
 
-    if fs_handled.zero? && net_handled.zero?
-      raise ArgumentError, "empty Landlock policy: provide filesystem paths or TCP ports"
+    if fs_handled.zero? && net_handled.zero? && scoped.zero?
+      raise ArgumentError, "empty Landlock policy: provide filesystem paths, TCP ports, or scopes"
     end
 
-    fd = _create_ruleset(fs_handled, net_handled)
+    fd = _create_ruleset(fs_handled, net_handled, scoped)
     begin
       add_path_rules(fd, read, READ_RIGHTS, abi)
       add_path_rules(fd, execute, EXEC_RIGHTS, abi)
@@ -89,20 +96,25 @@ module Landlock
     true
   end
 
-  def exec(argv, read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], chdir: nil, env: nil, unsetenv_others: false, close_others: true)
-    argv = Array(argv)
-    raise ArgumentError, "argv must not be empty" if argv.empty?
+  def exec(argv, read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], scope: [], chdir: nil, env: nil, unsetenv_others: false, close_others: true, allow_all_known: false)
+    argv = normalize_argv(argv)
 
     pid = fork do
-      # Safe after fork: this runs only in the child process before exec.
-      Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
-      restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:)
+      begin
+        # Safe after fork: this runs only in the child process before exec.
+        Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
+        restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
 
-      if env
-        exec_env = unsetenv_others ? env : ENV.to_h.merge(env)
-        Kernel.exec(exec_env, *argv, close_others: close_others)
-      else
-        Kernel.exec(*argv, close_others: close_others)
+        exec_args = argv_for_exec(argv)
+        exec_options = { close_others: close_others }
+        exec_options[:unsetenv_others] = true if unsetenv_others
+        if env
+          Kernel.exec(env, *exec_args, **exec_options)
+        else
+          Kernel.exec(*exec_args, **exec_options)
+        end
+      rescue Exception => error
+        exit_child!(error)
       end
     end
 
@@ -110,27 +122,52 @@ module Landlock
     status
   end
 
-  def spawn(argv, **opts)
-    argv = Array(argv)
-    raise ArgumentError, "argv must not be empty" if argv.empty?
+  def spawn(argv, read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], scope: [], chdir: nil, close_others: true, allow_all_known: false)
+    argv = normalize_argv(argv)
 
     fork do
-      # Safe after fork: this runs only in the child process before exec.
-      Dir.chdir(opts[:chdir]) if opts[:chdir] # rubocop:disable Discourse/NoChdir
-      restrict!(
-        read: opts.fetch(:read, []),
-        write: opts.fetch(:write, []),
-        execute: opts.fetch(:execute, []),
-        connect_tcp: opts.fetch(:connect_tcp, []),
-        bind_tcp: opts.fetch(:bind_tcp, []),
-        paths: opts.fetch(:paths, [])
-      )
-      Kernel.exec(*argv, close_others: opts.fetch(:close_others, true))
+      begin
+        # Safe after fork: this runs only in the child process before exec.
+        Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
+        restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
+        Kernel.exec(*argv_for_exec(argv), close_others: close_others)
+      rescue Exception => error
+        exit_child!(error)
+      end
     end
   end
 
+  def normalize_argv(argv)
+    raise ArgumentError, "argv must be an Array of command arguments" unless argv.is_a?(Array)
+    raise ArgumentError, "argv must not be empty" if argv.empty?
+
+    argv
+  end
+  private_class_method :normalize_argv
+
+  def argv_for_exec(argv)
+    command = argv.fetch(0)
+    [[command, command], *argv.drop(1)]
+  end
+  private_class_method :argv_for_exec
+
+  def exit_child!(error)
+    warn "Landlock child failed before exec: #{error.class}: #{error.message}"
+  ensure
+    exit! 127
+  end
+  private_class_method :exit_child!
+
+  def path_rights(path, rights)
+    File.directory?(path) ? rights : Array(rights) & FILE_PATH_RIGHTS
+  end
+  private_class_method :path_rights
+
   def add_path_rules(fd, paths, rights, abi)
-    Array(paths).each { |path| _add_path_rule(fd, File.expand_path(path), mask(rights, FS_RIGHTS, abi)) }
+    Array(paths).each do |path|
+      expanded_path = File.expand_path(path)
+      _add_path_rule(fd, expanded_path, mask(path_rights(expanded_path, rights), FS_RIGHTS, abi))
+    end
   end
   private_class_method :add_path_rules
 
@@ -192,4 +229,13 @@ module Landlock
     bits
   end
   private_class_method :_handled_net_for
+
+  def _scope_for(scope:, abi:)
+    bits = mask(scope, SCOPE_FLAGS, abi)
+    return 0 if bits.zero?
+    raise UnsupportedError, "Landlock scopes require ABI v6+; running ABI v#{abi}" if abi < 6
+
+    bits
+  end
+  private_class_method :_scope_for
 end

@@ -25,6 +25,30 @@ class LandlockTest < Minitest::Test
     assert_raises(ArgumentError) { Landlock.spawn([]) }
   end
 
+  def test_string_argv_rejected_to_avoid_implicit_shell
+    assert_raises(ArgumentError) { Landlock.exec("echo unsafe") }
+    assert_raises(ArgumentError) { Landlock.spawn("echo unsafe") }
+  end
+
+  def test_child_setup_failure_does_not_run_inherited_at_exit_handlers
+    Dir.mktmpdir do |dir|
+      marker = File.join(dir, "at_exit_ran")
+      script = <<~RUBY
+        require "landlock"
+        parent_pid = Process.pid
+        marker = #{marker.inspect}
+        at_exit { File.write(marker, "ran") if Process.pid != parent_pid }
+        status = Landlock.exec([#{RbConfig.ruby.inspect}, "-e", "exit 0"])
+        exit 10 if File.exist?(marker)
+        exit(status.exitstatus == 127 ? 0 : 11)
+      RUBY
+
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      assert $CHILD_STATUS.success?, out
+      refute_path_exists marker
+    end
+  end
+
   def test_rule_validation_helpers
     assert_equal ["/tmp", [:read_file]], Landlock.send(:normalize_path_rule, path: "/tmp", rights: :read_file)
     assert_equal ["/tmp", [:read_file]], Landlock.send(:normalize_path_rule, ["/tmp", :read_file])
@@ -66,6 +90,33 @@ class LandlockTest < Minitest::Test
     end
   end
 
+  def test_filesystem_read_allows_single_file_path
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    Dir.mktmpdir do |dir|
+      allowed = File.join(dir, "allowed.txt")
+      denied = File.join(dir, "denied.txt")
+      File.write(allowed, "ok")
+      File.write(denied, "no")
+
+      script = <<~RUBY
+        require "landlock"
+        Landlock.restrict!(read: [#{allowed.inspect}])
+        print File.read(#{allowed.inspect})
+        begin
+          File.read(#{denied.inspect})
+          exit 10
+        rescue Errno::EACCES
+          exit 0
+        end
+      RUBY
+
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      assert $CHILD_STATUS.success?, out
+      assert_equal "ok", out
+    end
+  end
+
   def test_filesystem_write_denied_outside_allowlist
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -91,6 +142,34 @@ class LandlockTest < Minitest::Test
       assert $CHILD_STATUS.success?, out
       assert_equal "ok", File.read(File.join(allowed, "ok.txt"))
       refute_path_exists File.join(denied, "no.txt")
+    end
+  end
+
+  def test_filesystem_write_allows_single_existing_file_path
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    Dir.mktmpdir do |dir|
+      allowed = File.join(dir, "allowed.txt")
+      denied = File.join(dir, "denied.txt")
+      File.write(allowed, "old")
+      File.write(denied, "old")
+
+      script = <<~RUBY
+        require "landlock"
+        Landlock.restrict!(write: [#{allowed.inspect}])
+        File.write(#{allowed.inspect}, "ok")
+        begin
+          File.write(#{denied.inspect}, "no")
+          exit 10
+        rescue Errno::EACCES
+          exit 0
+        end
+      RUBY
+
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      assert $CHILD_STATUS.success?, out
+      assert_equal "ok", File.read(allowed)
+      assert_equal "old", File.read(denied)
     end
   end
 
@@ -128,6 +207,70 @@ class LandlockTest < Minitest::Test
     status = Landlock.exec([RbConfig.ruby, "-e", "exit 7"], bind_tcp: [free_port])
 
     assert_equal 7, status.exitstatus
+  end
+
+  def test_signal_scope_denies_signalling_parent
+    skip "Landlock unsupported" unless Landlock.supported?
+    skip "Landlock scopes unsupported" if Landlock.abi_version < 6
+
+    script = <<~RUBY
+      require "landlock"
+      Landlock.restrict!(scope: [:signal])
+      begin
+        Process.kill(0, Process.ppid)
+        exit 10
+      rescue Errno::EPERM
+        exit 0
+      end
+    RUBY
+
+    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+    assert $CHILD_STATUS.success?, out
+  end
+
+  def test_exec_unsetenv_others_clears_parent_environment
+    skip "Landlock unsupported" unless Landlock.supported?
+    skip "Landlock network unsupported" if Landlock.abi_version < 4
+
+    ENV["LANDLOCK_TEST_SECRET"] = "secret"
+    status = Landlock.exec(
+      [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV.key?('LANDLOCK_TEST_SECRET') ? 10 : 0)"],
+      bind_tcp: [free_port],
+      env: { "PATH" => ENV.fetch("PATH", "") },
+      unsetenv_others: true
+    )
+
+    assert status.success?
+  ensure
+    ENV.delete("LANDLOCK_TEST_SECRET")
+  end
+
+  def test_exec_allow_all_known_denies_unlisted_writes
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    Dir.mktmpdir do |dir|
+      denied = File.join(dir, "denied.txt")
+      script = <<~RUBY
+        begin
+          File.write(#{denied.inspect}, "no")
+          exit 10
+        rescue Errno::EACCES
+          exit 0
+        end
+      RUBY
+
+      status = Landlock.exec(
+        [RbConfig.ruby, "--disable=gems", "-e", script],
+        read: runtime_paths,
+        execute: runtime_paths,
+        allow_all_known: true,
+        env: { "PATH" => ENV.fetch("PATH", "") },
+        unsetenv_others: true
+      )
+
+      assert status.success?
+      refute_path_exists denied
+    end
   end
 
   def test_spawn_returns_pid
@@ -215,5 +358,17 @@ class LandlockTest < Minitest::Test
     s.addr[1]
   ensure
     s&.close
+  end
+
+  def runtime_paths
+    [
+      File.dirname(RbConfig.ruby),
+      RbConfig::CONFIG["libdir"],
+      RbConfig::CONFIG["archlibdir"],
+      "/usr",
+      "/lib",
+      "/lib64",
+      "/etc"
+    ].compact.uniq.select { |path| File.exist?(path) }
   end
 end

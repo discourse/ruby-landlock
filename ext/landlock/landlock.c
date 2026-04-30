@@ -14,7 +14,18 @@
 #endif
 
 #ifndef SYS_landlock_create_ruleset
-# if defined(__x86_64__)
+# if defined(__NR_landlock_create_ruleset) && defined(__NR_landlock_add_rule) && defined(__NR_landlock_restrict_self)
+#  define SYS_landlock_create_ruleset __NR_landlock_create_ruleset
+#  define SYS_landlock_add_rule __NR_landlock_add_rule
+#  define SYS_landlock_restrict_self __NR_landlock_restrict_self
+# elif defined(__x86_64__) && defined(__ILP32__)
+#  ifndef __X32_SYSCALL_BIT
+#   define __X32_SYSCALL_BIT 0x40000000
+#  endif
+#  define SYS_landlock_create_ruleset (__X32_SYSCALL_BIT + 444)
+#  define SYS_landlock_add_rule (__X32_SYSCALL_BIT + 445)
+#  define SYS_landlock_restrict_self (__X32_SYSCALL_BIT + 446)
+# elif defined(__x86_64__)
 #  define SYS_landlock_create_ruleset 444
 #  define SYS_landlock_add_rule 445
 #  define SYS_landlock_restrict_self 446
@@ -23,9 +34,9 @@
 #  define SYS_landlock_add_rule 445
 #  define SYS_landlock_restrict_self 446
 # elif defined(__i386__)
-#  define SYS_landlock_create_ruleset 451
-#  define SYS_landlock_add_rule 452
-#  define SYS_landlock_restrict_self 453
+#  define SYS_landlock_create_ruleset 444
+#  define SYS_landlock_add_rule 445
+#  define SYS_landlock_restrict_self 446
 # endif
 #endif
 
@@ -95,6 +106,13 @@
 #endif
 #ifndef LANDLOCK_ACCESS_NET_CONNECT_TCP
 #define LANDLOCK_ACCESS_NET_CONNECT_TCP (1ULL << 1)
+#endif
+
+#ifndef LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET
+#define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET (1ULL << 0)
+#endif
+#ifndef LANDLOCK_SCOPE_SIGNAL
+#define LANDLOCK_SCOPE_SIGNAL (1ULL << 1)
 #endif
 
 #ifndef O_PATH
@@ -170,16 +188,24 @@ static VALUE rb_ll_abi_version(VALUE self) {
   return LONG2NUM(abi);
 }
 
-static VALUE rb_ll_create_ruleset(VALUE self, VALUE fs_bits, VALUE net_bits) {
+static VALUE rb_ll_create_ruleset(int argc, VALUE *argv, VALUE self) {
+  VALUE fs_bits, net_bits, scoped_bits;
+  rb_scan_args(argc, argv, "21", &fs_bits, &net_bits, &scoped_bits);
+
   struct rb_landlock_ruleset_attr attr;
   uint64_t handled_access_net = NUM2ULL(net_bits);
-  size_t attr_size = handled_access_net == 0 ?
-                     offsetof(struct rb_landlock_ruleset_attr, handled_access_net) :
-                     offsetof(struct rb_landlock_ruleset_attr, scoped);
+  uint64_t scoped = NIL_P(scoped_bits) ? 0 : NUM2ULL(scoped_bits);
+  size_t attr_size = offsetof(struct rb_landlock_ruleset_attr, handled_access_net);
+  if (scoped != 0) {
+    attr_size = sizeof(struct rb_landlock_ruleset_attr);
+  } else if (handled_access_net != 0) {
+    attr_size = offsetof(struct rb_landlock_ruleset_attr, scoped);
+  }
 
   memset(&attr, 0, sizeof(attr));
   attr.handled_access_fs = NUM2ULL(fs_bits);
   attr.handled_access_net = handled_access_net;
+  attr.scoped = scoped;
 
   long fd = ll_create_ruleset(&attr, attr_size, 0);
   if (fd < 0) raise_syscall_error("landlock_create_ruleset");
@@ -187,6 +213,8 @@ static VALUE rb_ll_create_ruleset(VALUE self, VALUE fs_bits, VALUE net_bits) {
 }
 
 static VALUE rb_ll_add_path_rule(VALUE self, VALUE ruleset_fd, VALUE path, VALUE access_bits) {
+  int ruleset = NUM2INT(ruleset_fd);
+  uint64_t allowed_access = NUM2ULL(access_bits);
   Check_Type(path, T_STRING);
   const char *cpath = StringValueCStr(path);
   int parent_fd = open(cpath, O_PATH | O_CLOEXEC);
@@ -194,10 +222,10 @@ static VALUE rb_ll_add_path_rule(VALUE self, VALUE ruleset_fd, VALUE path, VALUE
 
   struct rb_landlock_path_beneath_attr rule;
   memset(&rule, 0, sizeof(rule));
-  rule.allowed_access = NUM2ULL(access_bits);
+  rule.allowed_access = allowed_access;
   rule.parent_fd = parent_fd;
 
-  long ret = ll_add_rule(NUM2INT(ruleset_fd), LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
+  long ret = ll_add_rule(ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
   int saved_errno = errno;
   close(parent_fd);
   if (ret < 0) {
@@ -253,7 +281,7 @@ void Init_landlock(void) {
   }
 
   rb_define_singleton_method(mLandlock, "abi_version", rb_ll_abi_version, 0);
-  rb_define_singleton_method(mLandlock, "_create_ruleset", rb_ll_create_ruleset, 2);
+  rb_define_singleton_method(mLandlock, "_create_ruleset", rb_ll_create_ruleset, -1);
   rb_define_singleton_method(mLandlock, "_add_path_rule", rb_ll_add_path_rule, 3);
   rb_define_singleton_method(mLandlock, "_add_net_rule", rb_ll_add_net_rule, 3);
   rb_define_singleton_method(mLandlock, "_restrict_self", rb_ll_restrict_self, 1);
@@ -277,4 +305,6 @@ void Init_landlock(void) {
   rb_define_const(mLandlock, "ACCESS_FS_IOCTL_DEV", ULL2NUM(LANDLOCK_ACCESS_FS_IOCTL_DEV));
   rb_define_const(mLandlock, "ACCESS_NET_BIND_TCP", ULL2NUM(LANDLOCK_ACCESS_NET_BIND_TCP));
   rb_define_const(mLandlock, "ACCESS_NET_CONNECT_TCP", ULL2NUM(LANDLOCK_ACCESS_NET_CONNECT_TCP));
+  rb_define_const(mLandlock, "SCOPE_ABSTRACT_UNIX_SOCKET", ULL2NUM(LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET));
+  rb_define_const(mLandlock, "SCOPE_SIGNAL", ULL2NUM(LANDLOCK_SCOPE_SIGNAL));
 }
