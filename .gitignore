@@ -7,3 +7,4 @@
 /mkmf.log
 Gemfile.lock
 /lib/landlock/landlock.bundle
+/lib/landlock/landlock-safe-exec
