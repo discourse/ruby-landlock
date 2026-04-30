@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/prctl.h>
@@ -42,25 +43,57 @@
 
 #ifndef LANDLOCK_ACCESS_FS_EXECUTE
 #define LANDLOCK_ACCESS_FS_EXECUTE    (1ULL << 0)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_WRITE_FILE
 #define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_READ_FILE
 #define LANDLOCK_ACCESS_FS_READ_FILE  (1ULL << 2)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_READ_DIR
 #define LANDLOCK_ACCESS_FS_READ_DIR   (1ULL << 3)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_REMOVE_DIR
 #define LANDLOCK_ACCESS_FS_REMOVE_DIR (1ULL << 4)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_REMOVE_FILE
 #define LANDLOCK_ACCESS_FS_REMOVE_FILE (1ULL << 5)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_CHAR
 #define LANDLOCK_ACCESS_FS_MAKE_CHAR  (1ULL << 6)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_DIR
 #define LANDLOCK_ACCESS_FS_MAKE_DIR   (1ULL << 7)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_REG
 #define LANDLOCK_ACCESS_FS_MAKE_REG   (1ULL << 8)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_SOCK
 #define LANDLOCK_ACCESS_FS_MAKE_SOCK  (1ULL << 9)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_FIFO
 #define LANDLOCK_ACCESS_FS_MAKE_FIFO  (1ULL << 10)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_BLOCK
 #define LANDLOCK_ACCESS_FS_MAKE_BLOCK (1ULL << 11)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_SYM
 #define LANDLOCK_ACCESS_FS_MAKE_SYM   (1ULL << 12)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_REFER
 #define LANDLOCK_ACCESS_FS_REFER      (1ULL << 13)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_TRUNCATE
 #define LANDLOCK_ACCESS_FS_TRUNCATE   (1ULL << 14)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_IOCTL_DEV
 #define LANDLOCK_ACCESS_FS_IOCTL_DEV  (1ULL << 15)
 #endif
 
 #ifndef LANDLOCK_ACCESS_NET_BIND_TCP
 #define LANDLOCK_ACCESS_NET_BIND_TCP    (1ULL << 0)
+#endif
+#ifndef LANDLOCK_ACCESS_NET_CONNECT_TCP
 #define LANDLOCK_ACCESS_NET_CONNECT_TCP (1ULL << 1)
 #endif
 
@@ -72,29 +105,27 @@
 #define O_CLOEXEC 02000000
 #endif
 
-#ifndef HAVE_LINUX_LANDLOCK_H
-struct landlock_ruleset_attr {
+struct rb_landlock_ruleset_attr {
   uint64_t handled_access_fs;
   uint64_t handled_access_net;
   uint64_t scoped;
 };
 
-struct landlock_path_beneath_attr {
+struct rb_landlock_path_beneath_attr {
   uint64_t allowed_access;
   int32_t parent_fd;
 } __attribute__((packed));
 
-struct landlock_net_port_attr {
+struct rb_landlock_net_port_attr {
   uint64_t allowed_access;
   uint64_t port;
 };
-#endif
 
 static VALUE mLandlock;
 static VALUE eLandlockError;
 static VALUE eSyscallError;
 
-static long ll_create_ruleset(const struct landlock_ruleset_attr *attr, size_t size, uint32_t flags) {
+static long ll_create_ruleset(const void *attr, size_t size, uint32_t flags) {
 #ifdef SYS_landlock_create_ruleset
   return syscall(SYS_landlock_create_ruleset, attr, size, flags);
 #else
@@ -140,13 +171,17 @@ static VALUE rb_ll_abi_version(VALUE self) {
 }
 
 static VALUE rb_ll_create_ruleset(VALUE self, VALUE fs_bits, VALUE net_bits) {
-  struct landlock_ruleset_attr attr;
+  struct rb_landlock_ruleset_attr attr;
+  uint64_t handled_access_net = NUM2ULL(net_bits);
+  size_t attr_size = handled_access_net == 0 ?
+                     offsetof(struct rb_landlock_ruleset_attr, handled_access_net) :
+                     offsetof(struct rb_landlock_ruleset_attr, scoped);
+
   memset(&attr, 0, sizeof(attr));
   attr.handled_access_fs = NUM2ULL(fs_bits);
-  attr.handled_access_net = NUM2ULL(net_bits);
-  attr.scoped = 0;
+  attr.handled_access_net = handled_access_net;
 
-  long fd = ll_create_ruleset(&attr, sizeof(attr), 0);
+  long fd = ll_create_ruleset(&attr, attr_size, 0);
   if (fd < 0) raise_syscall_error("landlock_create_ruleset");
   return INT2NUM(fd);
 }
@@ -157,7 +192,7 @@ static VALUE rb_ll_add_path_rule(VALUE self, VALUE ruleset_fd, VALUE path, VALUE
   int parent_fd = open(cpath, O_PATH | O_CLOEXEC);
   if (parent_fd < 0) raise_syscall_error("open");
 
-  struct landlock_path_beneath_attr rule;
+  struct rb_landlock_path_beneath_attr rule;
   memset(&rule, 0, sizeof(rule));
   rule.allowed_access = NUM2ULL(access_bits);
   rule.parent_fd = parent_fd;
@@ -176,7 +211,7 @@ static VALUE rb_ll_add_net_rule(VALUE self, VALUE ruleset_fd, VALUE port, VALUE 
   unsigned long long p = NUM2ULL(port);
   if (p > 65535ULL) rb_raise(rb_eArgError, "TCP port must be between 0 and 65535");
 
-  struct landlock_net_port_attr rule;
+  struct rb_landlock_net_port_attr rule;
   memset(&rule, 0, sizeof(rule));
   rule.allowed_access = NUM2ULL(access_bits);
   rule.port = p;
