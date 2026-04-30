@@ -245,6 +245,71 @@ class LandlockTest < Minitest::Test
     ENV.delete("LANDLOCK_TEST_SECRET")
   end
 
+  def test_exec_env_without_unsetenv_others_adds_to_parent_environment
+    skip "Landlock unsupported" unless Landlock.supported?
+    skip "Landlock network unsupported" if Landlock.abi_version < 4
+
+    ENV["LANDLOCK_TEST_PARENT"] = "parent"
+    status = Landlock.exec(
+      [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV['LANDLOCK_TEST_PARENT'] == 'parent' && ENV['LANDLOCK_TEST_CHILD'] == 'child' ? 0 : 10)"],
+      bind_tcp: [free_port],
+      env: { "LANDLOCK_TEST_CHILD" => "child" }
+    )
+
+    assert status.success?
+  ensure
+    ENV.delete("LANDLOCK_TEST_PARENT")
+  end
+
+  def test_exec_chdir
+    skip "Landlock unsupported" unless Landlock.supported?
+    skip "Landlock network unsupported" if Landlock.abi_version < 4
+
+    Dir.mktmpdir do |dir|
+      status = Landlock.exec(
+        [RbConfig.ruby, "--disable=gems", "-e", "exit(Dir.pwd == ARGV.fetch(0) ? 0 : 10)", dir],
+        bind_tcp: [free_port],
+        chdir: dir
+      )
+
+      assert status.success?
+    end
+  end
+
+  def test_exec_unsupported_kernel_raises_before_fork
+    Landlock.stub(:abi_version, 0) do
+      assert_raises(Landlock::UnsupportedError) do
+        Landlock.exec([RbConfig.ruby, "--disable=gems", "-e", "exit 0"], bind_tcp: [1])
+      end
+    end
+  end
+
+  def test_spawn_unsupported_kernel_raises_before_fork
+    Landlock.stub(:abi_version, 0) do
+      assert_raises(Landlock::UnsupportedError) do
+        Landlock.spawn([RbConfig.ruby, "--disable=gems", "-e", "exit 0"], bind_tcp: [1])
+      end
+    end
+  end
+
+  def test_spawn_env_and_unsetenv_others
+    skip "Landlock unsupported" unless Landlock.supported?
+    skip "Landlock network unsupported" if Landlock.abi_version < 4
+
+    ENV["LANDLOCK_TEST_SECRET"] = "secret"
+    pid = Landlock.spawn(
+      [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV['LANDLOCK_TEST_CHILD'] == 'child' && !ENV.key?('LANDLOCK_TEST_SECRET') ? 0 : 10)"],
+      bind_tcp: [free_port],
+      env: { "LANDLOCK_TEST_CHILD" => "child" },
+      unsetenv_others: true
+    )
+    _, status = Process.wait2(pid)
+
+    assert status.success?
+  ensure
+    ENV.delete("LANDLOCK_TEST_SECRET")
+  end
+
   def test_exec_allow_all_known_denies_unlisted_writes
     skip "Landlock unsupported" unless Landlock.supported?
 

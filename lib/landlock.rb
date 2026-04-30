@@ -82,7 +82,10 @@ module Landlock
 
       paths.each do |rule|
         path, rights = normalize_path_rule(rule)
-        _add_path_rule(fd, File.expand_path(path), mask(rights, FS_RIGHTS, abi))
+        access_mask = mask(rights, FS_RIGHTS, abi)
+        next if access_mask.zero?
+
+        _add_path_rule(fd, File.expand_path(path), access_mask)
       end
 
       add_net_rules(fd, connect_tcp, [:connect_tcp], abi)
@@ -98,6 +101,7 @@ module Landlock
 
   def exec(argv, read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], scope: [], chdir: nil, env: nil, unsetenv_others: false, close_others: true, allow_all_known: false)
     argv = normalize_argv(argv)
+    ensure_landlock_supported!
 
     pid = fork do
       begin
@@ -105,14 +109,7 @@ module Landlock
         Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
         restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
 
-        exec_args = argv_for_exec(argv)
-        exec_options = { close_others: close_others }
-        exec_options[:unsetenv_others] = true if unsetenv_others
-        if env
-          Kernel.exec(env, *exec_args, **exec_options)
-        else
-          Kernel.exec(*exec_args, **exec_options)
-        end
+        Kernel.exec(*kernel_exec_args(argv, env, unsetenv_others:, close_others:))
       rescue Exception => error
         exit_child!(error)
       end
@@ -122,15 +119,16 @@ module Landlock
     status
   end
 
-  def spawn(argv, read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], scope: [], chdir: nil, close_others: true, allow_all_known: false)
+  def spawn(argv, read: [], write: [], execute: [], connect_tcp: [], bind_tcp: [], paths: [], scope: [], chdir: nil, env: nil, unsetenv_others: false, close_others: true, allow_all_known: false)
     argv = normalize_argv(argv)
+    ensure_landlock_supported!
 
     fork do
       begin
         # Safe after fork: this runs only in the child process before exec.
         Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
         restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
-        Kernel.exec(*argv_for_exec(argv), close_others: close_others)
+        Kernel.exec(*kernel_exec_args(argv, env, unsetenv_others:, close_others:))
       rescue Exception => error
         exit_child!(error)
       end
@@ -151,6 +149,23 @@ module Landlock
   end
   private_class_method :argv_for_exec
 
+  def kernel_exec_args(argv, env, unsetenv_others:, close_others:)
+    exec_options = { close_others: close_others }
+    exec_options[:unsetenv_others] = true if unsetenv_others
+
+    if env
+      [env, *argv_for_exec(argv), exec_options]
+    else
+      [*argv_for_exec(argv), exec_options]
+    end
+  end
+  private_class_method :kernel_exec_args
+
+  def ensure_landlock_supported!
+    raise UnsupportedError, "Linux Landlock is unavailable" unless abi_version.positive?
+  end
+  private_class_method :ensure_landlock_supported!
+
   def exit_child!(error)
     warn "Landlock child failed before exec: #{error.class}: #{error.message}"
   ensure
@@ -166,16 +181,23 @@ module Landlock
   def add_path_rules(fd, paths, rights, abi)
     Array(paths).each do |path|
       expanded_path = File.expand_path(path)
-      _add_path_rule(fd, expanded_path, mask(path_rights(expanded_path, rights), FS_RIGHTS, abi))
+      access_mask = mask(path_rights(expanded_path, rights), FS_RIGHTS, abi)
+      next if access_mask.zero?
+
+      _add_path_rule(fd, expanded_path, access_mask)
     end
   end
   private_class_method :add_path_rules
 
   def add_net_rules(fd, ports, rights, abi)
-    return if Array(ports).empty?
+    ports = Array(ports)
+    return if ports.empty?
     raise UnsupportedError, "Landlock network rules require ABI v4+; running ABI v#{abi}" if abi < 4
 
-    Array(ports).each { |port| _add_net_rule(fd, Integer(port), mask(rights, NET_RIGHTS, abi)) }
+    access_mask = mask(rights, NET_RIGHTS, abi)
+    return if access_mask.zero?
+
+    ports.each { |port| _add_net_rule(fd, Integer(port), access_mask) }
   end
   private_class_method :add_net_rules
 
