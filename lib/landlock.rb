@@ -2,6 +2,7 @@
 
 require_relative "landlock/version"
 require_relative "landlock/landlock"
+require_relative "landlock/safe_exec"
 
 module Landlock
   class Error < StandardError; end

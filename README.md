@@ -66,6 +66,78 @@ Landlock.exec(
 )
 ```
 
+## SafeExec helper
+
+`Landlock::SafeExec.capture` runs a command through the compiled `landlock-safe-exec` helper. The helper applies Landlock rules, resource limits, and an optional seccomp network-deny filter in the execing process before replacing itself with the target command. This keeps the privileged setup out of Ruby/FFI and avoids running Ruby code in a post-fork child. Use `capture!` when unsuccessful exit statuses should raise.
+
+For example, inspect an uploaded video with `ffprobe` while only allowing reads from the upload and system runtime paths, denying network access, and bounding CPU/output:
+
+```ruby
+result = Landlock::SafeExec.capture(
+  "ffprobe",
+  "-v", "error",
+  "-show_format",
+  "-show_streams",
+  "-of", "json",
+  upload_path,
+  read: [upload_path, *Landlock::SafeExec.default_read_paths],
+  execute: Landlock::SafeExec.default_execute_paths,
+  env: { "PATH" => ENV.fetch("PATH", "") },
+  rlimits: {
+    cpu_seconds: 5,
+    memory_bytes: 512 * 1024 * 1024,
+    file_size_bytes: 0,
+    open_files: 64,
+    processes: 0
+  },
+  seccomp_deny_network: true,
+  max_output_bytes: 256 * 1024,
+  truncate_output: false
+)
+
+metadata = JSON.parse(result.stdout) if result.success?
+```
+
+Pass `stdin:` when a tool should read from standard input instead of a file:
+
+```ruby
+stdout, stderr, status = Landlock::SafeExec.capture(
+  "tr", "a-z", "A-Z",
+  stdin: "hello",
+  env: { "PATH" => ENV.fetch("PATH", "") }
+)
+```
+
+`capture` returns a `Landlock::SafeExec::Result` with `stdout`, `stderr`, `status`, `success?`, `timed_out?`, and `output_truncated?`, including for unsuccessful exit statuses. It also supports array destructuring:
+
+```ruby
+stdout, stderr, status = Landlock::SafeExec.capture("tool", "arg")
+```
+
+`capture!` has the same return shape for successful commands, but raises `Landlock::SafeExec::CommandError` for unsuccessful statuses. The error also exposes `stdout`, `stderr`, `status`, and `result`.
+
+SafeExec options:
+
+- `read:`, `write:`, `execute:` — filesystem allowlists. Explicit paths must exist; missing paths raise `ArgumentError` instead of being silently ignored.
+- `connect_tcp:` — allowed outbound TCP ports. If omitted on Landlock ABI v4+, SafeExec denies outbound TCP by installing a dummy allow rule for port `0`. Pass `connect_tcp: []` to leave outbound TCP unrestricted.
+- `bind_tcp:` — allowed TCP bind ports. Binding is unrestricted unless this is provided.
+- `seccomp_deny_network:` — additionally deny common Linux network syscalls with seccomp. This is Linux-specific and intended as defense in depth.
+- `rlimits:` — resource limits. Supported keys are `:cpu_seconds`, `:memory_bytes`, `:file_size_bytes`, `:open_files`, and `:processes`. Values must be non-negative integers.
+- `timeout:` — wall-clock timeout in seconds. On timeout SafeExec terminates the process group and returns/raises with `result.timed_out?` true.
+- `max_output_bytes:` — combined stdout+stderr byte limit. With `truncate_output: false`, exceeding the limit raises. With `truncate_output: true`, output is truncated and `result.output_truncated?` is true.
+- `stdin:` — string or IO-like object to write to the child process stdin.
+- `chdir:` — working directory for the child.
+- `env:` — exact child environment by default.
+- `inherit_env:` — when true, inherit the parent environment and apply `env:` as overrides.
+- `success_status_codes:` — status codes considered successful by `capture!`; defaults to `[0]`.
+- `allow_all_known:` — when filesystem rules are present, handle all Landlock filesystem rights known to the running ABI so unlisted filesystem access is denied. Defaults to `true`.
+
+SafeExec uses an exact environment by default: `env:` is the full environment passed to the child, not additions to the parent environment. Use `inherit_env: true` when a command really needs the parent environment plus the supplied `env:` overrides.
+
+Use `Landlock::SafeExec.supported?` (or `sandboxing?`) to check whether the Linux helper and Landlock are available. When this is false, SafeExec still runs commands in pass-through mode but does not enforce Landlock/seccomp sandbox options.
+
+On non-Linux platforms, or when the compiled helper is unavailable, SafeExec runs as a pass-through compatibility wrapper. Process-management features such as capture, timeout, environment handling, `chdir:`, output limits, `stdin:`, and supported `rlimits:` still apply, but Landlock and seccomp options (`read:`, `write:`, `execute:`, `connect_tcp:`, `bind_tcp:`, `seccomp_deny_network:`) are ignored and a warning is emitted. This makes cross-platform integration easier while keeping the security guarantees explicit: sandboxing is Linux-only.
+
 ## Restrict current process
 
 This is irreversible for the current thread and its future children. Use `Landlock.exec` or `Landlock.spawn` unless you really mean it.
