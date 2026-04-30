@@ -85,6 +85,40 @@ Landlock.restrict!(
 )
 ```
 
+## Performance
+
+Landlock enforcement is done by the kernel after a ruleset is installed. In normal use the practical cost should be dominated by the one-time sandbox setup and by the work your process already performs, not by Ruby-side wrappers.
+
+This repository includes a small benchmark suite that compares common workloads before and after applying a read-only Landlock policy:
+
+```sh
+bundle exec rake bench
+# or
+bundle exec ruby benchmark/landlock_overhead.rb
+```
+
+The suite reports median timings for CPU-only work, file metadata reads, small file reads, directory scans, and the one-time ruleset setup cost. You can tune the run length with environment variables:
+
+```sh
+SAMPLES=15 ITERATIONS=100000 DIR_ITERATIONS=5000 bundle exec rake bench
+```
+
+Sample output looks like:
+
+```text
+workload           baseline     landlocked        delta    delta %
+--------------------------------------------------------------------
+cpu_loop           0.650 ms       0.648 ms    -0.002 ms     -0.31%
+file_stat         42.100 ms      42.300 ms     0.200 ms      0.48%
+file_read        120.500 ms     120.900 ms     0.400 ms      0.33%
+dir_scan          88.000 ms      88.200 ms     0.200 ms      0.23%
+
+Setup cost (create ruleset, add read rules, restrict current process):
+  median 0.080 ms (25 samples)
+```
+
+Treat small positive or negative deltas as noise and benchmark on the kernel, filesystem, and hardware you deploy on. The expected result is no practical steady-state overhead for typical application work, with a small one-time cost when installing the sandbox.
+
 ## Caveats
 
 Landlock is not a complete container. It does not impose CPU/memory limits, hide already-open file descriptors, or replace seccomp/namespaces/cgroups. For serious untrusted execution, combine it with a controlled environment, `close_others`, resource limits, and preferably process isolation.

@@ -20,7 +20,14 @@ Gem::Specification.new do |spec|
   spec.metadata["rubygems_mfa_required"] = "true"
 
   spec.files =
-    Dir["lib/**/*.rb", "ext/**/*.{c,h,rb}", "README.md", "CHANGELOG.md", "LICENSE.txt"]
+    Dir[
+      "lib/**/*.rb",
+      "ext/**/*.{c,h,rb}",
+      "benchmark/**/*.rb",
+      "README.md",
+      "CHANGELOG.md",
+      "LICENSE.txt"
+    ]
   spec.require_paths = ["lib"]
   spec.extensions = ["ext/landlock/extconf.rb"]
 

@@ -25,4 +25,14 @@ end
 
 task test: :compile
 
+namespace :bench do
+  desc "Run the Landlock overhead benchmark suite"
+  task overhead: :compile do
+    ruby "benchmark/landlock_overhead.rb"
+  end
+end
+
+desc "Run the Landlock overhead benchmark suite"
+task bench: "bench:overhead"
+
 task default: [:compile, :test]
