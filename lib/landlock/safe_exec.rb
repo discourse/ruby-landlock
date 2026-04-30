@@ -428,7 +428,7 @@ module Landlock
           next if value.nil?
 
           key = name.to_sym
-          unless %i[cpu_seconds memory_bytes file_size_bytes open_files processes].include?(key)
+          if !%i[cpu_seconds memory_bytes file_size_bytes open_files processes].include?(key)
             raise ArgumentError, "Unknown rlimit: #{name}"
           end
 
