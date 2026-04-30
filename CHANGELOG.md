@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-### Added
+### [0.2] - 2026-04-30
 
 - Add `Landlock::SafeExec.capture`, backed by a compiled `landlock-safe-exec` helper, for subprocess capture with Landlock, optional seccomp network denial, resource limits, exact environment handling, stdin, timeout handling, process-group cleanup, result metadata, and output limits.
 - Share native Landlock syscall/constant definitions between the Ruby extension and helper binary.
