@@ -5,3 +5,4 @@
 *.so
 *.o
 /mkmf.log
+Gemfile.lock
