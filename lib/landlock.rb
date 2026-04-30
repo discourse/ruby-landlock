@@ -6,6 +6,7 @@ require_relative "landlock/landlock"
 module Landlock
   class Error < StandardError; end
   class UnsupportedError < Error; end
+
   class SyscallError < Error
     attr_reader :errno, :syscall
 
@@ -93,7 +94,8 @@ module Landlock
     raise ArgumentError, "argv must not be empty" if argv.empty?
 
     pid = fork do
-      Dir.chdir(chdir) if chdir
+      # Safe after fork: this runs only in the child process before exec.
+      Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
       restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:)
 
       if env
@@ -113,7 +115,8 @@ module Landlock
     raise ArgumentError, "argv must not be empty" if argv.empty?
 
     fork do
-      Dir.chdir(opts[:chdir]) if opts[:chdir]
+      # Safe after fork: this runs only in the child process before exec.
+      Dir.chdir(opts[:chdir]) if opts[:chdir] # rubocop:disable Discourse/NoChdir
       restrict!(
         read: opts.fetch(:read, []),
         write: opts.fetch(:write, []),

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "mkmf"
 
 abort "missing ruby headers" unless have_header("ruby.h")
