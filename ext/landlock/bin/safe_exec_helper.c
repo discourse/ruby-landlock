@@ -274,11 +274,11 @@ static int deny_syscalls[] = {
 #endif
 };
 
-#ifdef AUDIT_ARCH_X86_64
+#if defined(__x86_64__) && defined(AUDIT_ARCH_X86_64)
 #define EXPECTED_AUDIT_ARCH AUDIT_ARCH_X86_64
-#elif defined(AUDIT_ARCH_AARCH64)
+#elif defined(__aarch64__) && defined(AUDIT_ARCH_AARCH64)
 #define EXPECTED_AUDIT_ARCH AUDIT_ARCH_AARCH64
-#elif defined(AUDIT_ARCH_I386)
+#elif defined(__i386__) && defined(AUDIT_ARCH_I386)
 #define EXPECTED_AUDIT_ARCH AUDIT_ARCH_I386
 #endif
 
