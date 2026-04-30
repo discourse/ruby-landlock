@@ -31,8 +31,10 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.extensions = ["ext/landlock/extconf.rb"]
 
-  spec.add_development_dependency "minitest", "~> 5.0"
-  spec.add_development_dependency "rake", "~> 13.0"
-  spec.add_development_dependency "rake-compiler", "~> 1.2"
-  spec.add_development_dependency "rubocop-discourse", "~> 3.9"
+  spec.add_development_dependency "minitest", "~> 5.27"
+  spec.add_development_dependency "rake", "~> 13.4"
+  spec.add_development_dependency "rake-compiler", "~> 1.3"
+  # rubocop-discourse 3.17.0 references the pre-2.23 Capybara/CurrentPathExpectation cop name.
+  spec.add_development_dependency "rubocop-capybara", "~> 2.22", "< 2.23"
+  spec.add_development_dependency "rubocop-discourse", "~> 3.17"
 end
