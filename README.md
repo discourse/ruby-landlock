@@ -202,12 +202,14 @@ Treat small positive or negative deltas as noise and benchmark on the kernel, fi
 
 ## Caveats
 
-Landlock is not a complete container. It does not impose CPU/memory limits, hide already-open file descriptors, or replace seccomp/namespaces/cgroups. For serious untrusted execution, combine it with a controlled environment, `close_others`, resource limits, and preferably process isolation.
+Landlock is not a complete container. It restricts selected kernel-mediated actions for the current thread and its future descendants, but it does not create namespaces, hide process IDs, virtualize the filesystem, or isolate the process from every kernel interface. For serious untrusted execution, combine Landlock with a controlled environment, resource limits, seccomp, and process isolation appropriate to your threat model.
 
-If a child fails during sandbox setup or `exec`, the helpers print a diagnostic and the child exits 127. That code can collide with a command that legitimately exits 127; unsupported kernels are checked before forking so they raise `Landlock::UnsupportedError` synchronously instead.
+`Landlock.restrict!` only installs a Landlock ruleset. It does not close already-open file descriptors, impose resource limits, clean the environment, or kill subprocess trees. `Landlock::SafeExec` adds practical subprocess hardening around this — exact environment by default, `close_others`, optional `rlimits:`, optional `seccomp_deny_network:`, output limits, timeout handling, and process-group termination — but it is still not a VM/container boundary.
 
-Path rules follow the kernel's normal path resolution when the rule is installed. Because paths are opened without `O_NOFOLLOW`, a symlink rule applies to the symlink target's inode, not to the symlink path itself.
+If `Landlock.exec` or `Landlock.spawn` child setup fails before `exec`, the child prints a diagnostic and exits 127. `landlock-safe-exec` setup/argument failures exit 126. These codes can collide with commands that legitimately exit with the same status, so inspect stderr when debugging failures.
 
-Landlock only restricts access rights included in a ruleset's handled set: omitted categories remain allowed. Use `allow_all_known: true` when you want unlisted filesystem actions denied. The high-level helpers handle the categories you pass (`read`, `write`, `execute`, `connect_tcp`, `bind_tcp`, `scope`). Landlock's TCP rules do not cover UDP or pathname Unix-domain sockets; ABI v6+ scopes can restrict signals and abstract Unix-domain sockets.
+Path rules follow the kernel's normal path resolution when the rule is installed. Because paths are opened without `O_NOFOLLOW`, a symlink rule applies to the symlink target's inode, not to the symlink path itself. SafeExec validates explicit `read:`, `write:`, and `execute:` paths before launching so typos fail closed instead of silently weakening a policy.
 
-`Landlock.restrict!` applies to the calling thread and its future children; already-running sibling threads are not retroactively sandboxed. Prefer `Landlock.exec` or `Landlock.spawn` for subprocess sandboxing from a larger Ruby application.
+Landlock only restricts access rights included in a ruleset's handled set: omitted categories remain allowed. Use `allow_all_known: true` when you want unlisted filesystem actions denied. SafeExec defaults `allow_all_known:` to true when filesystem rules are provided. Landlock TCP rules do not cover UDP or pathname Unix-domain sockets; ABI v6+ scopes can restrict signals and abstract Unix-domain sockets. SafeExec's `seccomp_deny_network:` is Linux-specific defense in depth for common network syscalls, not a general-purpose seccomp policy language.
+
+`Landlock.restrict!` applies to the calling thread and its future children; already-running sibling threads are not retroactively sandboxed. Prefer `Landlock::SafeExec`, `Landlock.exec`, or `Landlock.spawn` for subprocess sandboxing from a larger Ruby application.
