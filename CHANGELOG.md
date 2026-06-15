@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### [0.2.1] - 2026-06-16
+
+- Build `landlock-safe-exec` without Ruby extension `$(LIBS)` to avoid unnecessary runtime library dependencies and improve SafeExec helper startup time.
+
 ### [0.2] - 2026-04-30
 
 - Add `Landlock::SafeExec.capture`, backed by a compiled `landlock-safe-exec` helper, for subprocess capture with Landlock, optional seccomp network denial, resource limits, exact environment handling, stdin, timeout handling, process-group cleanup, result metadata, and output limits.

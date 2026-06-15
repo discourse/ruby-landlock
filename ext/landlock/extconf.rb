@@ -25,7 +25,7 @@ if RUBY_PLATFORM.include?("linux")
       all: #{helper}
 
       #{helper}: #{helper_src}
-      \t$(CC) $(INCFLAGS) $(CPPFLAGS) $(CFLAGS) #{helper_src} -o #{helper} $(LIBS)
+      \t$(CC) $(INCFLAGS) $(CPPFLAGS) $(CFLAGS) #{helper_src} -o #{helper}
 
       install: install-#{helper}
 
