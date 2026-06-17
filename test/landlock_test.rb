@@ -1,15 +1,8 @@
 # frozen_string_literal: true
 
-require "minitest/autorun"
-require "tmpdir"
-require "rbconfig"
-require "socket"
-require "English"
-require "open3"
-require "stringio"
-require "landlock"
+require_relative "test_helper"
 
-class LandlockTest < Minitest::Test
+class LandlockCoreTest < LandlockTestCase
   def test_supported_predicate_returns_boolean
     assert_includes [true, false], Landlock.supported?
   end
@@ -32,33 +25,19 @@ class LandlockTest < Minitest::Test
     assert_raises(ArgumentError) { Landlock.spawn("echo unsafe") }
   end
 
-  def test_child_setup_failure_does_not_run_inherited_at_exit_handlers
+  def test_exec_rejects_empty_policy
     skip "Landlock unsupported" unless Landlock.supported?
 
-    Dir.mktmpdir do |dir|
-      marker = File.join(dir, "at_exit_ran")
-      script = <<~RUBY
-        require "landlock"
-        parent_pid = Process.pid
-        marker = #{marker.inspect}
-        at_exit { File.write(marker, "ran") if Process.pid != parent_pid }
-        status = Landlock.exec([#{RbConfig.ruby.inspect}, "-e", "exit 0"])
-        exit 10 if File.exist?(marker)
-        exit(status.exitstatus == 127 ? 0 : 11)
-      RUBY
-
-      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
-      assert $CHILD_STATUS.success?, out
-      refute_path_exists marker
-    end
+    assert_raises(ArgumentError) { Landlock.exec([RbConfig.ruby, "-e", "exit 0"]) }
+    assert_raises(ArgumentError) { Landlock.spawn([RbConfig.ruby, "-e", "exit 0"]) }
   end
 
   def test_rule_validation_helpers
-    assert_equal ["/tmp", [:read_file]], Landlock.send(:normalize_path_rule, path: "/tmp", rights: :read_file)
-    assert_equal ["/tmp", [:read_file]], Landlock.send(:normalize_path_rule, ["/tmp", :read_file])
+    assert_equal ["/tmp", [:read_file]], Landlock::Policy.normalize_path_rule(path: "/tmp", rights: :read_file)
+    assert_equal ["/tmp", [:read_file]], Landlock::Policy.normalize_path_rule(["/tmp", :read_file])
 
-    assert_raises(ArgumentError) { Landlock.send(:normalize_path_rule, "/tmp") }
-    assert_raises(ArgumentError) { Landlock.send(:mask, [:bogus], Landlock::FS_RIGHTS, Landlock.abi_version) }
+    assert_raises(ArgumentError) { Landlock::Policy.normalize_path_rule("/tmp") }
+    assert_raises(ArgumentError) { Landlock::Policy.mask([:bogus], Landlock::FS_RIGHTS, Landlock.abi_version) }
   end
 
   def test_abi_detection
@@ -88,7 +67,7 @@ class LandlockTest < Minitest::Test
         end
       RUBY
 
-      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
       assert $CHILD_STATUS.success?, out
       assert_equal "ok", out
     end
@@ -115,7 +94,7 @@ class LandlockTest < Minitest::Test
         end
       RUBY
 
-      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
       assert $CHILD_STATUS.success?, out
       assert_equal "ok", out
     end
@@ -142,7 +121,7 @@ class LandlockTest < Minitest::Test
         end
       RUBY
 
-      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
       assert $CHILD_STATUS.success?, out
       assert_equal "ok", File.read(File.join(allowed, "ok.txt"))
       refute_path_exists File.join(denied, "no.txt")
@@ -170,7 +149,7 @@ class LandlockTest < Minitest::Test
         end
       RUBY
 
-      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
       assert $CHILD_STATUS.success?, out
       assert_equal "ok", File.read(allowed)
       assert_equal "old", File.read(denied)
@@ -198,7 +177,26 @@ class LandlockTest < Minitest::Test
         end
       RUBY
 
-      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
+      assert $CHILD_STATUS.success?, out
+      assert_equal "ok", out
+    end
+  end
+
+  def test_custom_file_path_rule_ignores_directory_only_rights
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    Dir.mktmpdir do |dir|
+      allowed = File.join(dir, "allowed.txt")
+      File.write(allowed, "ok")
+
+      script = <<~RUBY
+        require "landlock"
+        Landlock.restrict!(paths: [{ path: #{allowed.inspect}, rights: [:read_file, :read_dir] }])
+        print File.read(#{allowed.inspect})
+      RUBY
+
+      out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
       assert $CHILD_STATUS.success?, out
       assert_equal "ok", out
     end
@@ -228,7 +226,7 @@ class LandlockTest < Minitest::Test
       end
     RUBY
 
-    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
     assert $CHILD_STATUS.success?, out
   end
 
@@ -237,12 +235,15 @@ class LandlockTest < Minitest::Test
     skip "Landlock network unsupported" if Landlock.abi_version < 4
 
     ENV["LANDLOCK_TEST_SECRET"] = "secret"
-    status = Landlock.exec(
-      [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV.key?('LANDLOCK_TEST_SECRET') ? 10 : 0)"],
-      bind_tcp: [free_port],
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      unsetenv_others: true
-    )
+    status =
+      Landlock.exec(
+        [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV.key?('LANDLOCK_TEST_SECRET') ? 10 : 0)"],
+        bind_tcp: [free_port],
+        env: {
+          "PATH" => ENV.fetch("PATH", "")
+        },
+        unsetenv_others: true
+      )
 
     assert status.success?
   ensure
@@ -254,11 +255,19 @@ class LandlockTest < Minitest::Test
     skip "Landlock network unsupported" if Landlock.abi_version < 4
 
     ENV["LANDLOCK_TEST_PARENT"] = "parent"
-    status = Landlock.exec(
-      [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV['LANDLOCK_TEST_PARENT'] == 'parent' && ENV['LANDLOCK_TEST_CHILD'] == 'child' ? 0 : 10)"],
-      bind_tcp: [free_port],
-      env: { "LANDLOCK_TEST_CHILD" => "child" }
-    )
+    status =
+      Landlock.exec(
+        [
+          RbConfig.ruby,
+          "--disable=gems",
+          "-e",
+          "exit(ENV['LANDLOCK_TEST_PARENT'] == 'parent' && ENV['LANDLOCK_TEST_CHILD'] == 'child' ? 0 : 10)"
+        ],
+        bind_tcp: [free_port],
+        env: {
+          "LANDLOCK_TEST_CHILD" => "child"
+        }
+      )
 
     assert status.success?
   ensure
@@ -270,14 +279,70 @@ class LandlockTest < Minitest::Test
     skip "Landlock network unsupported" if Landlock.abi_version < 4
 
     Dir.mktmpdir do |dir|
-      status = Landlock.exec(
-        [RbConfig.ruby, "--disable=gems", "-e", "exit(Dir.pwd == ARGV.fetch(0) ? 0 : 10)", dir],
-        bind_tcp: [free_port],
-        chdir: dir
-      )
+      status =
+        Landlock.exec(
+          [RbConfig.ruby, "--disable=gems", "-e", "exit(Dir.pwd == ARGV.fetch(0) ? 0 : 10)", dir],
+          bind_tcp: [free_port],
+          chdir: dir
+        )
 
       assert status.success?
     end
+  end
+
+  def test_exec_closes_inherited_file_descriptors_by_default
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    reader, writer = non_stdio_pipe
+    status =
+      Landlock.exec(
+        [
+          RbConfig.ruby,
+          "--disable=gems",
+          "-e",
+          "begin; IO.for_fd(ENV.fetch('LANDLOCK_TEST_FD').to_i).write('leaked'); exit 10; rescue Exception; exit 0; end"
+        ],
+        read: runtime_paths,
+        execute: runtime_paths,
+        env: {
+          "LANDLOCK_TEST_FD" => writer.fileno.to_s,
+          "PATH" => ENV.fetch("PATH", "")
+        },
+        unsetenv_others: true
+      )
+    writer.close
+
+    assert status.success?
+    assert IO.select([reader], nil, nil, 1), "expected EOF after child did not inherit fd"
+    assert_equal "", reader.read
+  ensure
+    reader&.close unless reader&.closed?
+    writer&.close unless writer&.closed?
+  end
+
+  def test_exec_can_preserve_inherited_file_descriptors
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    reader, writer = non_stdio_pipe
+    status =
+      Landlock.exec(
+        [RbConfig.ruby, "--disable=gems", "-e", "IO.for_fd(ENV.fetch('LANDLOCK_TEST_FD').to_i).write('leaked')"],
+        read: runtime_paths,
+        execute: runtime_paths,
+        env: {
+          "LANDLOCK_TEST_FD" => writer.fileno.to_s,
+          "PATH" => ENV.fetch("PATH", "")
+        },
+        unsetenv_others: true,
+        close_others: false
+      )
+    writer.close
+
+    assert status.success?
+    assert_equal "leaked", reader.read
+  ensure
+    reader&.close unless reader&.closed?
+    writer&.close unless writer&.closed?
   end
 
   def test_exec_unsupported_kernel_raises_before_fork
@@ -301,12 +366,20 @@ class LandlockTest < Minitest::Test
     skip "Landlock network unsupported" if Landlock.abi_version < 4
 
     ENV["LANDLOCK_TEST_SECRET"] = "secret"
-    pid = Landlock.spawn(
-      [RbConfig.ruby, "--disable=gems", "-e", "exit(ENV['LANDLOCK_TEST_CHILD'] == 'child' && !ENV.key?('LANDLOCK_TEST_SECRET') ? 0 : 10)"],
-      bind_tcp: [free_port],
-      env: { "LANDLOCK_TEST_CHILD" => "child" },
-      unsetenv_others: true
-    )
+    pid =
+      Landlock.spawn(
+        [
+          RbConfig.ruby,
+          "--disable=gems",
+          "-e",
+          "exit(ENV['LANDLOCK_TEST_CHILD'] == 'child' && !ENV.key?('LANDLOCK_TEST_SECRET') ? 0 : 10)"
+        ],
+        bind_tcp: [free_port],
+        env: {
+          "LANDLOCK_TEST_CHILD" => "child"
+        },
+        unsetenv_others: true
+      )
     _, status = Process.wait2(pid)
 
     assert status.success?
@@ -328,18 +401,42 @@ class LandlockTest < Minitest::Test
         end
       RUBY
 
-      status = Landlock.exec(
-        [RbConfig.ruby, "--disable=gems", "-e", script],
-        read: runtime_paths,
-        execute: runtime_paths,
-        allow_all_known: true,
-        env: { "PATH" => ENV.fetch("PATH", "") },
-        unsetenv_others: true
-      )
+      status =
+        Landlock.exec(
+          [RbConfig.ruby, "--disable=gems", "-e", script],
+          read: runtime_paths,
+          execute: runtime_paths,
+          allow_all_known: true,
+          env: {
+            "PATH" => ENV.fetch("PATH", "")
+          },
+          unsetenv_others: true
+        )
 
       assert status.success?
       refute_path_exists denied
     end
+  end
+
+  def test_spawn_falls_back_to_fork_when_native_policy_argv_is_too_large
+    forked = nil
+
+    Landlock::Native.stub(:abi_version, 1) do
+      Landlock::Runner::Native.stub(:available?, true) do
+        Landlock::Runner::Native.stub(:spawn, ->(*, **) { raise Errno::E2BIG }) do
+          Landlock::Runner::Fork.stub(
+            :spawn,
+            ->(argv, **options) do
+              forked = [argv, options]
+              123_456
+            end
+          ) { assert_equal 123_456, Landlock.spawn(["true"], bind_tcp: [1]) }
+        end
+      end
+    end
+
+    assert_equal ["true"], forked.fetch(0)
+    assert_equal [1], forked.fetch(1).fetch(:bind_tcp)
   end
 
   def test_spawn_returns_pid
@@ -365,11 +462,12 @@ class LandlockTest < Minitest::Test
     other = TCPServer.new("127.0.0.1", 0)
     denied_port = other.addr[1]
 
-    accept_thread = Thread.new do
-      socket = server.accept
-      socket.close
-    rescue IOError, Errno::EBADF
-    end
+    accept_thread =
+      Thread.new do
+        socket = server.accept
+        socket.close
+      rescue IOError, Errno::EBADF
+      end
 
     script = <<~RUBY
       require "socket"
@@ -384,7 +482,7 @@ class LandlockTest < Minitest::Test
       end
     RUBY
 
-    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
     assert $CHILD_STATUS.success?, out
   ensure
     server&.close
@@ -412,800 +510,7 @@ class LandlockTest < Minitest::Test
       end
     RUBY
 
-    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: [:child, :out], &:read)
+    out = IO.popen([RbConfig.ruby, "-Ilib", "-Ilib/landlock", "-e", script], chdir: root, err: %i[child out], &:read)
     assert $CHILD_STATUS.success?, out
-  end
-
-  def test_safe_exec_capture_returns_stdout_stderr_and_status
-    stdout, stderr, status = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "$stdout.print 'ok'; $stderr.print 'warn'",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "ok", stdout
-    assert_equal "warn", stderr
-    assert status.success?
-  end
-
-  def test_safe_exec_enforces_output_limit
-    error = assert_raises(Landlock::SafeExec::CommandError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "print 'x' * 1024",
-        read: runtime_paths,
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") },
-        max_output_bytes: 10
-      )
-    end
-
-    assert_match(/exceeded 10 bytes/, error.message)
-  end
-
-  def test_safe_exec_truncates_output
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print 'x' * 1024",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      max_output_bytes: 10,
-      truncate_output: true
-    )
-
-    assert_equal "x" * 10, output.stdout
-    assert output.output_truncated?
-    refute output.timed_out?
-  end
-
-  def test_safe_exec_stdin_support
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print STDIN.read.upcase",
-      stdin: "hello",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "HELLO", output.stdout
-  end
-
-  def test_safe_exec_io_stdin_support
-    input = StringIO.new("streamed")
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print STDIN.read.reverse",
-      stdin: input,
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "demaerts", output.stdout
-  end
-
-  def test_safe_exec_output_limit_counts_stdout_and_stderr_together
-    capture_method = Landlock::SafeExec.send(:helper_available?) ? :capture_process : :capture_process_without_helper
-    capture_options = if capture_method == :capture_process
-      {
-        read: runtime_paths,
-        write: [],
-        execute: runtime_paths,
-        connect_tcp: nil,
-        bind_tcp: [],
-        seccomp_deny_network: false,
-        allow_all_known: true
-      }
-    else
-      {}
-    end
-
-    stdout, stderr, _status, truncated = Landlock::SafeExec.send(
-      capture_method,
-      [RbConfig.ruby, "--disable=gems", "-e", "$stdout.print('o' * 8); $stderr.print('e' * 8)"],
-      **capture_options,
-      timeout: nil,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      inherit_env: false,
-      stdin: nil,
-      chdir: nil,
-      rlimits: {},
-      max_output_bytes: 10,
-      truncate_output: true
-    )
-
-    assert truncated
-    assert_equal 10, stdout.bytesize + stderr.bytesize
-    assert_operator stdout.bytesize, :<=, 8
-    assert_operator stderr.bytesize, :<=, 8
-  end
-
-  def test_safe_exec_seccomp_denies_network
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "begin; Socket.new(:INET, :STREAM); rescue Errno::EPERM; print 'denied'; end",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      seccomp_deny_network: true
-    )
-
-    assert_equal "denied", output.stdout
-  end
-
-  def test_safe_exec_seccomp_denies_socketpair
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "begin; Socket.pair(:UNIX, :STREAM, 0); rescue Errno::EPERM; print 'denied'; end",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      seccomp_deny_network: true
-    )
-
-    assert_equal "denied", output.stdout
-  end
-
-  def test_safe_exec_seccomp_denies_tcp_server_creation
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "begin; TCPServer.new('127.0.0.1', 0); rescue Errno::EPERM; print 'denied'; end",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      seccomp_deny_network: true
-    )
-
-    assert_equal "denied", output.stdout
-  end
-
-  def test_safe_exec_env_is_exact_by_default
-    ENV["LANDLOCK_TEST_SECRET"] = "secret"
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print ENV['LANDLOCK_TEST_CHILD']; exit(ENV.key?('LANDLOCK_TEST_SECRET') ? 10 : 0)",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", ""), "LANDLOCK_TEST_CHILD" => "child" },
-    )
-
-    assert_equal "child", output.stdout
-  ensure
-    ENV.delete("LANDLOCK_TEST_SECRET")
-  end
-
-  def test_safe_exec_inherit_env_keeps_parent_environment
-    ENV["LANDLOCK_TEST_PARENT"] = "parent"
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print ENV['LANDLOCK_TEST_PARENT']",
-      connect_tcp: [],
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      inherit_env: true
-    )
-
-    assert_equal "parent", output.stdout
-  ensure
-    ENV.delete("LANDLOCK_TEST_PARENT")
-  end
-
-  def test_safe_exec_chdir
-    Dir.mktmpdir do |dir|
-      output = Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "print Dir.pwd",
-        read: runtime_paths,
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") },
-        chdir: dir
-      )
-
-      assert_equal File.realpath(dir), output.stdout
-    end
-  end
-
-  def test_safe_exec_capture_bang_raises_and_exposes_output_and_status
-    error = assert_raises(Landlock::SafeExec::CommandError) do
-      Landlock::SafeExec.capture!(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "$stdout.print 'out'; $stderr.print 'err'; exit 7",
-        read: runtime_paths,
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") }
-      )
-    end
-
-    assert_equal "out", error.stdout
-    assert_equal "err", error.stderr
-    assert_equal 7, error.status.exitstatus
-    assert_equal error.status, error.result.status
-    refute error.result.success?
-  end
-
-  def test_safe_exec_capture_returns_non_success_status_without_raising
-    stdout, stderr, status = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "$stdout.print 'out'; $stderr.print 'err'; exit 7",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-    )
-
-    assert_equal "out", stdout
-    assert_equal "err", stderr
-    assert_equal 7, status.exitstatus
-  end
-
-  def test_safe_exec_timeout
-    error = assert_raises(Landlock::SafeExec::CommandError) do
-      Landlock::SafeExec.capture!(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "sleep 10",
-        read: runtime_paths,
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") },
-        timeout: 0.1
-      )
-    end
-
-    refute error.status.success?
-    assert error.result.timed_out?
-  end
-
-  def test_safe_exec_applies_open_files_rlimit
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print Process.getrlimit(Process::RLIMIT_NOFILE).first",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      rlimits: { open_files: 32 }
-    )
-
-    assert_equal "32", output.stdout
-  end
-
-  def test_safe_exec_applies_memory_rlimit
-    skip "RLIMIT_AS is not portable on macOS" if RUBY_PLATFORM.include?("darwin")
-
-    memory_limit = 8 * 1024 * 1024 * 1024
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-e",
-      "print Process.getrlimit(Process::RLIMIT_AS).first",
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      rlimits: { memory_bytes: memory_limit }
-    )
-
-    assert_equal memory_limit.to_s, output.stdout
-  end
-
-  def test_safe_exec_accepts_processes_rlimit
-    argv = Landlock::SafeExec.send(
-      :helper_argv,
-      [RbConfig.ruby, "--disable=gems", "-e", "exit 0"],
-      read: [],
-      write: [],
-      execute: [],
-      env: {},
-      inherit_env: false,
-      chdir: nil,
-      connect_tcp: [],
-      bind_tcp: [],
-      rlimits: { processes: 64 },
-      seccomp_deny_network: false,
-      allow_all_known: true
-    )
-
-    assert_includes argv, "--rlimit"
-    assert_includes argv, "processes=64"
-  end
-
-  def test_safe_exec_applies_file_size_rlimit
-    Dir.mktmpdir do |dir|
-      path = File.join(dir, "too-large.txt")
-      error = assert_raises(Landlock::SafeExec::CommandError) do
-        Landlock::SafeExec.capture!(
-          RbConfig.ruby,
-          "--disable=gems",
-          "-e",
-          "File.binwrite(ARGV.fetch(0), 'x' * 4096)",
-          path,
-          read: runtime_paths,
-          write: [dir],
-          execute: runtime_paths,
-          env: { "PATH" => ENV.fetch("PATH", "") },
-          rlimits: { file_size_bytes: 1024 }
-        )
-      end
-
-      refute error.status.success?
-      assert_operator File.size(path), :<=, 1024 if File.exist?(path)
-    end
-  end
-
-  def test_safe_exec_applies_cpu_rlimit
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    error = assert_raises(Landlock::SafeExec::CommandError) do
-      Landlock::SafeExec.capture!(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "loop { 1 + 1 }",
-        read: runtime_paths,
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") },
-        rlimits: { cpu_seconds: 1 },
-        timeout: 5
-      )
-    end
-
-    refute error.status.success?
-  end
-
-  def test_safe_exec_rejects_unknown_rlimit
-    assert_raises(ArgumentError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "exit 0",
-        rlimits: { bogus: 1 }
-      )
-    end
-  end
-
-  def test_safe_exec_rejects_negative_rlimit
-    assert_raises(ArgumentError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "exit 0",
-        rlimits: { open_files: -1 }
-      )
-    end
-  end
-
-  def test_safe_exec_rejects_negative_output_limit
-    assert_raises(ArgumentError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "exit 0",
-        max_output_bytes: -1
-      )
-    end
-  end
-
-  def test_safe_exec_rejects_missing_sandbox_paths
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    assert_raises(ArgumentError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "exit 0",
-        read: ["/definitely/missing/landlock-test"]
-      )
-    end
-  end
-
-  def test_safe_exec_rejects_invalid_tcp_ports
-    assert_raises(ArgumentError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "exit 0",
-        connect_tcp: ["123x"]
-      )
-    end
-
-    assert_raises(ArgumentError) do
-      Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "exit 0",
-        bind_tcp: [-1]
-      )
-    end
-  end
-
-  def test_safe_exec_landlock_denies_unlisted_write
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-
-    Dir.mktmpdir do |dir|
-      denied = File.join(dir, "denied.txt")
-      output = Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "begin; File.write(ARGV.fetch(0), 'no'); rescue Errno::EACCES; print 'denied'; end",
-        denied,
-        read: runtime_paths,
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") },
-        )
-
-      assert_equal "denied", output.stdout
-      refute_path_exists denied
-    end
-  end
-
-  def test_safe_exec_landlock_allows_listed_write
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-
-    Dir.mktmpdir do |dir|
-      allowed = File.join(dir, "allowed.txt")
-      output = Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "File.write(ARGV.fetch(0), 'ok'); print File.read(ARGV.fetch(0))",
-        allowed,
-        read: runtime_paths,
-        write: [dir],
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") }
-      )
-
-      assert_equal "ok", output.stdout
-      assert_equal "ok", File.read(allowed)
-    end
-  end
-
-  def test_safe_exec_landlock_allows_listed_read_and_denies_unlisted_read
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-
-    Dir.mktmpdir do |dir|
-      allowed = File.join(dir, "allowed.txt")
-      denied = File.join(dir, "denied.txt")
-      File.write(allowed, "allowed")
-      File.write(denied, "denied")
-
-      output = Landlock::SafeExec.capture(
-        RbConfig.ruby,
-        "--disable=gems",
-        "-e",
-        "print File.read(ARGV.fetch(0)); begin; File.read(ARGV.fetch(1)); rescue Errno::EACCES; print ':denied'; end",
-        allowed,
-        denied,
-        read: [*runtime_paths, allowed],
-        execute: runtime_paths,
-        env: { "PATH" => ENV.fetch("PATH", "") }
-      )
-
-      assert_equal "allowed:denied", output.stdout
-    end
-  end
-
-  def test_safe_exec_landlock_denies_unlisted_execute
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-
-    Dir.mktmpdir do |dir|
-      executable = File.join(dir, "program")
-      File.write(executable, "#!/bin/sh\necho nope\n")
-      File.chmod(0o755, executable)
-
-      error = assert_raises(Landlock::SafeExec::CommandError) do
-        Landlock::SafeExec.capture!(
-          executable,
-          read: [*runtime_paths, executable],
-          execute: runtime_paths,
-          env: { "PATH" => ENV.fetch("PATH", "") }
-        )
-      end
-
-      assert_equal 126, error.status.exitstatus
-      assert_match(/Permission denied/, error.stderr)
-    end
-  end
-
-  def test_safe_exec_allow_all_known_false_does_not_install_strict_filesystem_policy
-    argv = Landlock::SafeExec.send(
-      :helper_argv,
-      [RbConfig.ruby, "--disable=gems", "-e", "exit 0"],
-      read: runtime_paths,
-      write: [],
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") },
-      inherit_env: false,
-      chdir: nil,
-      connect_tcp: [],
-      bind_tcp: [],
-      rlimits: {},
-      seccomp_deny_network: false,
-      allow_all_known: false
-    )
-
-    refute_includes argv, "--allow-all-known"
-  end
-
-  def test_safe_exec_timeout_kills_process_group
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    Dir.mktmpdir do |dir|
-      marker = File.join(dir, "child-survived")
-      assert_raises(Landlock::SafeExec::CommandError) do
-        Landlock::SafeExec.capture!(
-          RbConfig.ruby,
-          "--disable=gems",
-          "-e",
-          "Process.fork { sleep 1; File.write(ARGV.fetch(0), 'alive') }; sleep 10",
-          marker,
-          read: runtime_paths,
-          write: [dir],
-          execute: runtime_paths,
-          env: { "PATH" => ENV.fetch("PATH", "") },
-          timeout: 0.1
-        )
-      end
-
-      sleep 1.2
-      refute_path_exists marker
-    end
-  end
-
-  def test_safe_exec_connect_tcp_allows_only_listed_port
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-    skip "Landlock network unsupported" if Landlock.abi_version < 4
-
-    server = TCPServer.new("127.0.0.1", 0)
-    allowed_port = server.addr[1]
-    other = TCPServer.new("127.0.0.1", 0)
-    denied_port = other.addr[1]
-
-    accept_thread = Thread.new do
-      socket = server.accept
-      socket.close
-    rescue IOError, Errno::EBADF
-    end
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "TCPSocket.new('127.0.0.1', ARGV.fetch(0).to_i).close; begin; TCPSocket.new('127.0.0.1', ARGV.fetch(1).to_i).close; rescue Errno::EACCES; print 'denied'; end",
-      allowed_port.to_s,
-      denied_port.to_s,
-      read: runtime_paths,
-      execute: runtime_paths,
-      connect_tcp: [allowed_port],
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "denied", output.stdout
-  ensure
-    server&.close
-    other&.close
-    accept_thread&.join(1)
-  end
-
-  def test_safe_exec_omitted_connect_tcp_denies_connects
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-    skip "Landlock network unsupported" if Landlock.abi_version < 4
-
-    server = TCPServer.new("127.0.0.1", 0)
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "begin; TCPSocket.new('127.0.0.1', ARGV.fetch(0).to_i).close; rescue Errno::EACCES; print 'denied'; end",
-      server.addr[1].to_s,
-      read: runtime_paths,
-      execute: runtime_paths,
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "denied", output.stdout
-  ensure
-    server&.close
-  end
-
-  def test_safe_exec_empty_connect_tcp_leaves_connects_unrestricted
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    server = TCPServer.new("127.0.0.1", 0)
-    accept_thread = Thread.new do
-      socket = server.accept
-      socket.close
-    rescue IOError, Errno::EBADF
-    end
-
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "TCPSocket.new('127.0.0.1', ARGV.fetch(0).to_i).close; print 'connected'",
-      server.addr[1].to_s,
-      connect_tcp: [],
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "connected", output.stdout
-  ensure
-    server&.close
-    accept_thread&.join(1)
-  end
-
-  def test_safe_exec_bind_tcp_allows_only_listed_port
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-    skip "Landlock unsupported" unless Landlock.supported?
-    skip "Landlock network unsupported" if Landlock.abi_version < 4
-
-    allowed = free_port
-    denied = free_port
-    output = Landlock::SafeExec.capture(
-      RbConfig.ruby,
-      "--disable=gems",
-      "-rsocket",
-      "-e",
-      "TCPServer.new('127.0.0.1', ARGV.fetch(0).to_i).close; begin; TCPServer.new('127.0.0.1', ARGV.fetch(1).to_i).close; rescue Errno::EACCES; print 'denied'; end",
-      allowed.to_s,
-      denied.to_s,
-      read: runtime_paths,
-      execute: runtime_paths,
-      bind_tcp: [allowed],
-      env: { "PATH" => ENV.fetch("PATH", "") }
-    )
-
-    assert_equal "denied", output.stdout
-  end
-
-  def test_safe_exec_helper_reports_cli_parse_errors
-    skip "SafeExec helper unavailable" unless File.executable?(Landlock::SafeExec.helper_path)
-
-    cases = [
-      [["--bogus", "--", "true"], /unknown option/],
-      [["--read"], /missing option argument/],
-      [["--"], /missing command/],
-      [["--bind-tcp", "70000", "--", "true"], /TCP port must be between 0 and 65535/],
-      [["--rlimit", "nope", "--", "true"], /rlimit must be name=value/],
-      [["--rlimit", "bogus=1", "--", "true"], /unknown rlimit/],
-      [["--rlimit", "open_files=12x", "--", "true"], /rlimit value/],
-      [["--connect-tcp", "abc", "--", "true"], /TCP port must be an integer/],
-      [["--connect-tcp", "-1", "--", "true"], /TCP port must be an integer/]
-    ]
-
-    cases.each do |argv, error_pattern|
-      _stdout, stderr, status = Open3.capture3(Landlock::SafeExec.helper_path, *argv)
-
-      assert_equal 126, status.exitstatus, argv.inspect
-      assert_match error_pattern, stderr
-    end
-  end
-
-  def test_safe_exec_without_helper_is_pass_through_and_warns_for_sandbox_options
-    Landlock::SafeExec.instance_variable_set(:@warned_unsupported_sandbox, false)
-    output = nil
-    _stdout, stderr = capture_io do
-      Landlock::SafeExec.stub(:helper_available?, false) do
-        output = Landlock::SafeExec.capture(
-          RbConfig.ruby,
-          "--disable=gems",
-          "-e",
-          "print 'ok'",
-          read: ["/definitely/sandbox/only"],
-          seccomp_deny_network: true,
-          env: { "PATH" => ENV.fetch("PATH", "") }
-        )
-      end
-    end
-
-    assert_equal "ok", output.stdout
-    assert_match(/running command as a pass-through/, stderr)
-  ensure
-    Landlock::SafeExec.instance_variable_set(:@warned_unsupported_sandbox, false)
-  end
-
-  def test_safe_exec_without_helper_preserves_process_management_features
-    ENV["LANDLOCK_TEST_SECRET"] = "secret"
-    output = nil
-
-    Landlock::SafeExec.stub(:helper_available?, false) do
-      Dir.mktmpdir do |dir|
-        output = Landlock::SafeExec.capture(
-          RbConfig.ruby,
-          "--disable=gems",
-          "-e",
-          "print [Dir.pwd, ENV['LANDLOCK_TEST_CHILD'], ENV.key?('LANDLOCK_TEST_SECRET'), Process.getrlimit(Process::RLIMIT_NOFILE).first].join(':')",
-          chdir: dir,
-          env: { "PATH" => ENV.fetch("PATH", ""), "LANDLOCK_TEST_CHILD" => "child" },
-          rlimits: { open_files: 32 },
-          max_output_bytes: 1_024
-        )
-
-        assert_equal "#{File.realpath(dir)}:child:false:32", output.stdout
-      end
-    end
-  ensure
-    ENV.delete("LANDLOCK_TEST_SECRET")
-  end
-
-  private
-
-  def root
-    File.expand_path("..", __dir__)
-  end
-
-  def free_port
-    s = TCPServer.new("127.0.0.1", 0)
-    s.addr[1]
-  ensure
-    s&.close
-  end
-
-  def runtime_paths
-    [
-      File.dirname(RbConfig.ruby),
-      RbConfig::CONFIG["libdir"],
-      RbConfig::CONFIG["archlibdir"],
-      "/usr",
-      "/lib",
-      "/lib64",
-      "/etc"
-    ].compact.uniq.select { |path| File.exist?(path) }
   end
 end

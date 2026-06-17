@@ -2,6 +2,8 @@
 
 require "mkmf"
 
+$CPPFLAGS = ["-D_GNU_SOURCE", $CPPFLAGS].join(" ") unless $CPPFLAGS.split.include?("-D_GNU_SOURCE")
+
 abort "missing ruby headers" unless have_header("ruby.h")
 
 have_header("linux/landlock.h")
@@ -17,6 +19,7 @@ create_makefile("landlock/landlock")
 if RUBY_PLATFORM.include?("linux")
   helper = "landlock-safe-exec"
   helper_src = "$(srcdir)/bin/safe_exec_helper.c"
+  helper_headers = "$(srcdir)/landlock_native.h $(srcdir)/seccomp_deny_network.h"
   helper_dest = "$(RUBYARCHDIR)/#{helper}"
 
   File.open("Makefile", "a") do |makefile|
