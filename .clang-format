@@ -1,0 +1,10 @@
+BasedOnStyle: LLVM
+Language: C
+ColumnLimit: 100
+IndentWidth: 2
+ContinuationIndentWidth: 4
+SortIncludes: false
+InsertBraces: true
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never

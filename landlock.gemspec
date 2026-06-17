@@ -19,22 +19,14 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["rubygems_mfa_required"] = "true"
 
-  spec.files =
-    Dir[
-      "lib/**/*.rb",
-      "ext/**/*.{c,h,rb}",
-      "benchmark/**/*.rb",
-      "README.md",
-      "CHANGELOG.md",
-      "LICENSE.txt"
-    ]
+  spec.files = Dir["lib/**/*.rb", "ext/**/*.{c,h,rb}", "benchmark/**/*.rb", "README.md", "CHANGELOG.md", "LICENSE.txt"]
   spec.require_paths = ["lib"]
   spec.extensions = ["ext/landlock/extconf.rb"]
 
   spec.add_development_dependency "minitest", "~> 5.27"
   spec.add_development_dependency "rake", "~> 13.4"
   spec.add_development_dependency "rake-compiler", "~> 1.3"
-  # rubocop-discourse 3.17.0 references the pre-2.23 Capybara/CurrentPathExpectation cop name.
-  spec.add_development_dependency "rubocop-capybara", "~> 2.22", "< 2.23"
-  spec.add_development_dependency "rubocop-discourse", "~> 3.17"
+  spec.add_development_dependency "rubocop-capybara"
+  spec.add_development_dependency "rubocop-discourse", "~> 3.18"
+  spec.add_development_dependency "syntax_tree", "~> 6.3"
 end

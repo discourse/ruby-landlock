@@ -71,9 +71,7 @@ module LandlockBench
 
   def run_child(payload)
     stdout, stderr, status = Open3.capture3(*child_command(payload), chdir: ROOT)
-    unless status.success?
-      abort "bench child failed (#{status.exitstatus})\nSTDOUT:\n#{stdout}\nSTDERR:\n#{stderr}"
-    end
+    abort "bench child failed (#{status.exitstatus})\nSTDOUT:\n#{stdout}\nSTDERR:\n#{stderr}" unless status.success?
 
     JSON.parse(stdout)
   end
@@ -91,8 +89,8 @@ module LandlockBench
         mode: "workloads",
         iterations: DEFAULT_ITERATIONS,
         dir_iterations: DIR_ITERATIONS,
-        read_paths: read_paths,
-        workspace: workspace
+        read_paths:,
+        workspace:
       }
 
       baseline = collect_samples(DEFAULT_SAMPLES) { run_child(common.merge(sandbox: false)) }
@@ -104,9 +102,7 @@ module LandlockBench
       end
 
       sandbox = collect_samples(DEFAULT_SAMPLES) { run_child(common.merge(sandbox: true)) }
-      setup = collect_samples(SETUP_SAMPLES) do
-        run_child(mode: "setup", read_paths: read_paths).fetch("setup_ns")
-      end
+      setup = collect_samples(SETUP_SAMPLES) { run_child(mode: "setup", read_paths:).fetch("setup_ns") }
 
       print_workload_table(baseline, sandbox)
       puts
@@ -132,14 +128,7 @@ module LandlockBench
         locked = median(sandbox.map { |sample| sample.fetch(name) })
         delta = locked - base
         pct = base.positive? ? (delta.to_f / base * 100.0) : 0.0
-        puts format(
-          "%-12s %14s %14s %12s %9.2f%%",
-          name,
-          format_ms(base),
-          format_ms(locked),
-          format_ms(delta),
-          pct
-        )
+        puts format("%-12s %14s %14s %12s %9.2f%%", name, format_ms(base), format_ms(locked), format_ms(delta), pct)
       else
         puts format("%-12s %14s %14s %12s %10s", name, format_ms(base), "n/a", "n/a", "n/a")
       end
@@ -185,20 +174,10 @@ module LandlockBench
 
     GC.disable
     {
-      "cpu_loop" => measure do
-        iterations.times { |index| sink ^= ((index * 31) & 0xffff) }
-      end,
-      "file_stat" => measure do
-        iterations.times { sink ^= File.stat(file).size }
-      end,
-      "file_read" => measure do
-        iterations.times { sink ^= File.binread(file).bytesize }
-      end,
-      "dir_scan" => measure do
-        dir_iterations.times do
-          Dir.foreach(entries) { |entry| sink ^= entry.bytesize }
-        end
-      end
+      "cpu_loop" => measure { iterations.times { |index| sink ^= ((index * 31) & 0xffff) } },
+      "file_stat" => measure { iterations.times { sink ^= File.stat(file).size } },
+      "file_read" => measure { iterations.times { sink ^= File.binread(file).bytesize } },
+      "dir_scan" => measure { dir_iterations.times { Dir.foreach(entries) { |entry| sink ^= entry.bytesize } } }
     }.merge("sink" => sink)
   ensure
     GC.enable
