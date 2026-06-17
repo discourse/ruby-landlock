@@ -2,7 +2,7 @@
 
 require "mkmf"
 
-$CPPFLAGS = ["-D_GNU_SOURCE", $CPPFLAGS].join(" ") unless $CPPFLAGS.split.include?("-D_GNU_SOURCE")
+append_cppflags("-D_GNU_SOURCE")
 
 abort "missing ruby headers" unless have_header("ruby.h")
 
