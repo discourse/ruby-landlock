@@ -32,11 +32,11 @@ class LandlockTestCase < Minitest::Test
 
   def capture_backend_result(runner, argv, **options)
     defaults = {
-      read: [],
-      write: [],
-      execute: [],
-      connect_tcp: [],
-      bind_tcp: [],
+      read: nil,
+      write: nil,
+      execute: nil,
+      connect_tcp: nil,
+      bind_tcp: nil,
       paths: [],
       scope: [],
       chdir: nil,
@@ -52,8 +52,11 @@ class LandlockTestCase < Minitest::Test
       truncate_output: false
     }.merge(options)
     defaults[:rlimits] = Landlock::Rlimits.normalize(defaults[:rlimits])
-    defaults[:connect_tcp] = Landlock::Validation.normalize_ports(defaults[:connect_tcp], :connect_tcp)
-    defaults[:bind_tcp] = Landlock::Validation.normalize_ports(defaults[:bind_tcp], :bind_tcp)
+    %i[connect_tcp bind_tcp].each do |key|
+      next if defaults[key].nil?
+
+      defaults[key] = Landlock::Validation.normalize_ports(defaults[key], key)
+    end
 
     runner.call(argv.map(&:to_s), **defaults)
   end

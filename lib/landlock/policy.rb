@@ -8,13 +8,13 @@ module Landlock
     module_function
 
     def restrict!(
-      read: [],
-      write: [],
-      execute: [],
-      connect_tcp: [],
-      bind_tcp: [],
-      paths: [],
-      scope: [],
+      read: nil,
+      write: nil,
+      execute: nil,
+      connect_tcp: nil,
+      bind_tcp: nil,
+      paths: nil,
+      scope: nil,
       allow_all_known: false
     )
       abi = Native.abi_version
@@ -61,8 +61,8 @@ module Landlock
     end
 
     def requested?(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
-      allow_all_known || Array(read).any? || Array(write).any? || Array(execute).any? || Array(connect_tcp).any? ||
-        Array(bind_tcp).any? || Array(paths).any? || Array(scope).any?
+      allow_all_known || !read.nil? || !write.nil? || !execute.nil? || !connect_tcp.nil? || !bind_tcp.nil? ||
+        !Array(paths).empty? || !Array(scope).empty?
     end
 
     def path_rights(path, rights)
@@ -126,11 +126,14 @@ module Landlock
       rights
     end
 
+    # Landlock leaves any right absent from handled_access_fs unrestricted
+    # kernel-wide, so nil (do not police this class) and [] (police it, grant
+    # nothing) must produce different masks.
     def handled_fs_for(read:, write:, execute:, paths:, abi:)
       bits = 0
-      bits |= mask(READ_RIGHTS, FS_RIGHTS, abi) unless Array(read).empty?
-      bits |= mask(EXEC_RIGHTS, FS_RIGHTS, abi) unless Array(execute).empty?
-      bits |= mask(WRITE_RIGHTS, FS_RIGHTS, abi) unless Array(write).empty?
+      bits |= mask(READ_RIGHTS, FS_RIGHTS, abi) unless read.nil?
+      bits |= mask(EXEC_RIGHTS, FS_RIGHTS, abi) unless execute.nil?
+      bits |= mask(WRITE_RIGHTS, FS_RIGHTS, abi) unless write.nil?
       Array(paths).each do |rule|
         path, rights = normalize_path_rule(rule)
         bits |= path_rule_access_mask(File.expand_path(path), rights, abi)
@@ -140,8 +143,8 @@ module Landlock
 
     def handled_net_for(connect_tcp:, bind_tcp:, abi:)
       bits = 0
-      bits |= ACCESS_NET_CONNECT_TCP unless Array(connect_tcp).empty?
-      bits |= ACCESS_NET_BIND_TCP unless Array(bind_tcp).empty?
+      bits |= ACCESS_NET_CONNECT_TCP unless connect_tcp.nil?
+      bits |= ACCESS_NET_BIND_TCP unless bind_tcp.nil?
       return 0 if bits.zero?
 
       raise UnsupportedError, "Landlock network rules require ABI v4+; running ABI v#{abi}" if abi < 4

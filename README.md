@@ -119,8 +119,10 @@ stdout, stderr, status = Landlock.capture(
 Capture options:
 
 - `read:`, `write:`, `execute:` — filesystem allowlists. Explicit paths must exist; missing paths raise `ArgumentError` instead of being silently ignored.
+
+  These distinguish `nil` from `[]`. Omitting one (or passing `nil`) leaves that access class outside the ruleset's handled mask, so Landlock does not restrict it **anywhere** — `write: nil` means the child can still create, delete and rename files across the filesystem. Passing `[]` enforces the class while granting no paths, which is what you want for "must not write at all". Prefer `[]` over `nil` unless you deliberately want the class unpoliced.
 - `paths:` — exact path rules with explicit Landlock rights, e.g. `{ path:, rights: %i[read_file] }`.
-- `connect_tcp:` and `bind_tcp:` — allowed TCP ports. TCP access is unrestricted unless a network rule is provided.
+- `connect_tcp:` and `bind_tcp:` — allowed TCP ports, with the same `nil` versus `[]` distinction. `[]` denies all TCP for that operation and requires ABI v4+; `nil` leaves TCP unrestricted.
 - `scope:` — Landlock ABI v6+ scopes such as `:signal` and `:abstract_unix_socket`.
 - `seccomp_deny_network:` — additionally deny common Linux network syscalls with seccomp. This is Linux-specific and intended as defense in depth.
 - `rlimits:` — resource limits. Supported keys are `:cpu_seconds`, `:memory_bytes`, `:file_size_bytes`, `:open_files`, and `:processes`. Values must be non-negative integers.

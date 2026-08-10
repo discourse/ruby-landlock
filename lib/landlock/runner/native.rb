@@ -202,15 +202,15 @@ module Landlock
         close_others:
       )
         args = [helper_path]
-        Array(read).each { |path| args << "--read" << path.to_s }
-        Array(write).each { |path| args << "--write" << path.to_s }
-        Array(execute).each { |path| args << "--execute" << path.to_s }
+        emit_rules(args, "--read", read)
+        emit_rules(args, "--write", write)
+        emit_rules(args, "--execute", execute)
         Array(paths).each do |rule|
           path, rights = Policy.normalize_path_rule(rule)
           args << "--path" << path.to_s << Array(rights).map(&:to_s).join(",")
         end
-        Array(connect_tcp).each { |port| args << "--connect-tcp" << port.to_s }
-        Array(bind_tcp).each { |port| args << "--bind-tcp" << port.to_s }
+        emit_rules(args, "--connect-tcp", connect_tcp)
+        emit_rules(args, "--bind-tcp", bind_tcp)
         Array(scope).each { |name| args << "--scope" << name.to_s }
         Array(rlimits).each { |key, value| args << "--rlimit" << "#{key}=#{value}" }
         args << "--allow-all-known" if allow_all_known
@@ -219,6 +219,16 @@ module Landlock
         args << "--"
         args.concat(argv.map(&:to_s))
         args
+      end
+
+      # An empty value keeps the rights in the handled mask while granting
+      # nothing; the empty string is never a valid path or port, so it cannot
+      # collide with a real entry.
+      def emit_rules(args, flag, values)
+        return if values.nil?
+        return args.push(flag, "") if Array(values).empty?
+
+        Array(values).each { |value| args.push(flag, value.to_s) }
       end
     end
   end

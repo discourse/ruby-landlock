@@ -14,13 +14,13 @@ module Landlock
 
     def exec(
       argv,
-      read: [],
-      write: [],
-      execute: [],
-      connect_tcp: [],
-      bind_tcp: [],
-      paths: [],
-      scope: [],
+      read: nil,
+      write: nil,
+      execute: nil,
+      connect_tcp: nil,
+      bind_tcp: nil,
+      paths: nil,
+      scope: nil,
       chdir: nil,
       env: nil,
       unsetenv_others: false,
@@ -49,13 +49,13 @@ module Landlock
 
     def spawn(
       argv,
-      read: [],
-      write: [],
-      execute: [],
-      connect_tcp: [],
-      bind_tcp: [],
-      paths: [],
-      scope: [],
+      read: nil,
+      write: nil,
+      execute: nil,
+      connect_tcp: nil,
+      bind_tcp: nil,
+      paths: nil,
+      scope: nil,
       chdir: nil,
       env: nil,
       unsetenv_others: false,
@@ -82,13 +82,13 @@ module Landlock
 
     def capture_with(
       argv,
-      read: [],
-      write: [],
-      execute: [],
-      connect_tcp: [],
-      bind_tcp: [],
-      paths: [],
-      scope: [],
+      read: nil,
+      write: nil,
+      execute: nil,
+      connect_tcp: nil,
+      bind_tcp: nil,
+      paths: nil,
+      scope: nil,
       chdir: nil,
       env: nil,
       unsetenv_others: false,
@@ -178,8 +178,8 @@ module Landlock
     end
 
     def prepare_policy(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, chdir:, allow_all_known:)
-      connect_tcp = Validation.normalize_ports(connect_tcp, :connect_tcp)
-      bind_tcp = Validation.normalize_ports(bind_tcp, :bind_tcp)
+      connect_tcp = connect_tcp.nil? ? nil : Validation.normalize_ports(connect_tcp, :connect_tcp)
+      bind_tcp = bind_tcp.nil? ? nil : Validation.normalize_ports(bind_tcp, :bind_tcp)
       read, write, execute, paths = validate_policy_paths!(read:, write:, execute:, paths:, chdir:)
       { read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known: }
     end
@@ -221,9 +221,9 @@ module Landlock
     def validate_policy_paths!(read:, write:, execute:, paths:, chdir:)
       base = chdir ? File.expand_path(chdir) : Dir.pwd
       abi = Native.abi_version
-      read = Validation.validate_existing_paths(read, :read, chdir:)
-      write = Validation.validate_existing_paths(write, :write, chdir:)
-      execute = Validation.validate_existing_paths(execute, :execute, chdir:)
+      read = read.nil? ? nil : Validation.validate_existing_paths(read, :read, chdir:)
+      write = write.nil? ? nil : Validation.validate_existing_paths(write, :write, chdir:)
+      execute = execute.nil? ? nil : Validation.validate_existing_paths(execute, :execute, chdir:)
       paths =
         Array(paths).map do |rule|
           path, rights = Policy.normalize_path_rule(rule)
