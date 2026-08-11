@@ -97,6 +97,15 @@ static void path_rule_list_push(path_rule_list *list, char *path, uint64_t right
   list->len++;
 }
 
+/* An empty value marks the class handled while granting nothing; a real path
+   or port is never the empty string, so the two cannot collide. */
+static void push_unless_empty(string_list *list, char *value, int *handled) {
+  *handled = 1;
+  if (value[0] != '\0') {
+    string_list_push(list, value);
+  }
+}
+
 static unsigned long long parse_ull(const char *value, const char *name) {
   if (!value || value[0] == '\0' || value[0] == '-' || value[0] == '+' ||
       isspace((unsigned char)value[0])) {
@@ -119,6 +128,13 @@ static unsigned long long parse_port(const char *value) {
     die_msg("TCP port must be between 0 and 65535");
   }
   return port;
+}
+
+static void push_port_unless_empty(ull_list *list, const char *value, int *handled) {
+  *handled = 1;
+  if (value[0] != '\0') {
+    ull_list_push(list, parse_port(value));
+  }
 }
 
 static int abi_version(void) {
@@ -239,10 +255,11 @@ static void add_net_rule(int fd, unsigned long long port, uint64_t rights) {
 static void apply_landlock(string_list *read_paths, string_list *write_paths,
                            string_list *execute_paths, path_rule_list *path_rules,
                            ull_list *connect_ports, ull_list *bind_ports, uint64_t scoped,
-                           int allow_all_known) {
-  int need_fs = read_paths->len || write_paths->len || execute_paths->len || path_rules->len ||
+                           int allow_all_known, int handled_read, int handled_write,
+                           int handled_execute, int handled_connect, int handled_bind) {
+  int need_fs = handled_read || handled_write || handled_execute || path_rules->len ||
                 allow_all_known;
-  int need_net = connect_ports->len || bind_ports->len;
+  int need_net = handled_connect || handled_bind;
   int need_scope = scoped != 0;
   if (!need_fs && !need_net && !need_scope) {
     return;
@@ -262,13 +279,13 @@ static void apply_landlock(string_list *read_paths, string_list *write_paths,
   uint64_t known_fs_rights = known_fs_rights_for_abi(abi);
   uint64_t fs_handled = allow_all_known ? known_fs_rights : 0;
   if (!allow_all_known) {
-    if (read_paths->len) {
+    if (handled_read) {
       fs_handled |= read_rights();
     }
-    if (execute_paths->len) {
+    if (handled_execute) {
       fs_handled |= execute_rights();
     }
-    if (write_paths->len) {
+    if (handled_write) {
       fs_handled |= write_rights(abi);
     }
     for (size_t i = 0; i < path_rules->len; i++) {
@@ -281,10 +298,10 @@ static void apply_landlock(string_list *read_paths, string_list *write_paths,
     }
   }
   uint64_t net_handled = 0;
-  if (bind_ports->len) {
+  if (handled_bind) {
     net_handled |= LANDLOCK_ACCESS_NET_BIND_TCP;
   }
-  if (connect_ports->len) {
+  if (handled_connect) {
     net_handled |= LANDLOCK_ACCESS_NET_CONNECT_TCP;
   }
 
@@ -533,6 +550,8 @@ int main(int argc, char **argv) {
   path_rule_list path_rules = {0};
   ull_list connect_ports = {0}, bind_ports = {0};
   int seccomp_deny_network = 0, allow_all_known = 0, close_others = 1;
+  int handled_read = 0, handled_write = 0, handled_execute = 0;
+  int handled_connect = 0, handled_bind = 0;
   uint64_t scoped = 0;
   char *chdir_path = NULL;
   char **command_argv = NULL;
@@ -544,19 +563,19 @@ int main(int argc, char **argv) {
       break;
     }
     if (strcmp(argv[i], "--read") == 0) {
-      string_list_push(&read_paths, require_arg(argc, argv, &i));
+      push_unless_empty(&read_paths, require_arg(argc, argv, &i), &handled_read);
     } else if (strcmp(argv[i], "--write") == 0) {
-      string_list_push(&write_paths, require_arg(argc, argv, &i));
+      push_unless_empty(&write_paths, require_arg(argc, argv, &i), &handled_write);
     } else if (strcmp(argv[i], "--execute") == 0) {
-      string_list_push(&execute_paths, require_arg(argc, argv, &i));
+      push_unless_empty(&execute_paths, require_arg(argc, argv, &i), &handled_execute);
     } else if (strcmp(argv[i], "--path") == 0) {
       char *path = require_arg(argc, argv, &i);
       char *rights = require_arg(argc, argv, &i);
       path_rule_list_push(&path_rules, path, parse_fs_rights(rights));
     } else if (strcmp(argv[i], "--connect-tcp") == 0) {
-      ull_list_push(&connect_ports, parse_port(require_arg(argc, argv, &i)));
+      push_port_unless_empty(&connect_ports, require_arg(argc, argv, &i), &handled_connect);
     } else if (strcmp(argv[i], "--bind-tcp") == 0) {
-      ull_list_push(&bind_ports, parse_port(require_arg(argc, argv, &i)));
+      push_port_unless_empty(&bind_ports, require_arg(argc, argv, &i), &handled_bind);
     } else if (strcmp(argv[i], "--scope") == 0) {
       scoped |= scope_name(require_arg(argc, argv, &i));
     } else if (strcmp(argv[i], "--chdir") == 0) {
@@ -588,7 +607,8 @@ int main(int argc, char **argv) {
   }
 
   apply_landlock(&read_paths, &write_paths, &execute_paths, &path_rules, &connect_ports,
-                 &bind_ports, scoped, allow_all_known);
+                 &bind_ports, scoped, allow_all_known, handled_read, handled_write,
+                 handled_execute, handled_connect, handled_bind);
   if (seccomp_deny_network) {
     apply_seccomp_deny_network();
   }

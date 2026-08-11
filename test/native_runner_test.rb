@@ -38,10 +38,10 @@ class LandlockRunnerNativeTest < LandlockTestCase
 
     options = {
       read: runtime_paths,
-      write: [],
+      write: nil,
       execute: runtime_paths,
-      connect_tcp: [],
-      bind_tcp: [],
+      connect_tcp: nil,
+      bind_tcp: nil,
       paths: [],
       scope: [],
       chdir: nil,

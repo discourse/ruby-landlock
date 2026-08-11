@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.4] - 2026-08-10
+
+### Changed
+
+- **Breaking.** `read:`, `write:`, `execute:`, `connect_tcp:` and `bind_tcp:` treat an empty array as "block all" rather than "allow all". These were previously controlled by the length of each allowlist, so `read: []` turned off all read restrictions instead of denying everything. `nil` is now the "restrictions disabled" flag and the new default; `[]` means "restriction on, empty allowlist". Callers relying on `[]` to mean unrestricted must pass `nil`; callers passing populated arrays are unaffected.
+- The native helper marks an enabled-but-empty restriction by passing the existing flag with an empty value, e.g. `--write ""`. An omitted flag leaves the restriction disabled.
+
 ## [0.3] - 2026-06-17
 
 ### Added
