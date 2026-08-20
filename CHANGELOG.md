@@ -4,8 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-## [0.4.1] - 2026-08-20
-
 ### Fixed
 
 - Remove the 100 ms child-exit polling interval from subprocess capture. Capture now drains stdout and stderr, then monitors the child via pidfd until exit or the wall-clock deadline, retaining polling only as a compatibility fallback when pidfds are unavailable.
