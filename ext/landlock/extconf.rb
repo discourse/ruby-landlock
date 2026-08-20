@@ -12,7 +12,9 @@ have_header("linux/filter.h")
 have_header("sys/prctl.h")
 have_header("sys/syscall.h")
 have_header("sys/resource.h")
+have_header("sys/wait.h")
 have_header("fcntl.h")
+abort "missing wait4" unless have_func("wait4", %w[sys/resource.h sys/wait.h])
 
 create_makefile("landlock/landlock")
 

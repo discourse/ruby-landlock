@@ -1,12 +1,24 @@
 #include "ruby.h"
+#include "ruby/thread.h"
 #include "landlock_native.h"
 #include "seccomp_deny_network.h"
 
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 
 static VALUE mLandlock;
 static VALUE eLandlockError;
 static VALUE eSyscallError;
+
+struct rb_landlock_wait4_args {
+  pid_t pid;
+  int flags;
+  int status;
+  int error_number;
+  struct rusage usage;
+  pid_t waited_pid;
+};
 
 static void raise_syscall_error(const char *syscall_name) {
   int saved_errno = errno;
@@ -129,6 +141,45 @@ static VALUE rb_ll_seccomp_deny_network(VALUE self) {
   return Qtrue;
 }
 
+static void *ll_wait4_without_gvl(void *pointer) {
+  struct rb_landlock_wait4_args *args = pointer;
+  args->waited_pid = wait4(args->pid, &args->status, args->flags, &args->usage);
+  args->error_number = args->waited_pid < 0 ? errno : 0;
+  return NULL;
+}
+
+static VALUE rb_ll_wait4(VALUE self, VALUE pid_value, VALUE flags_value) {
+  struct rb_landlock_wait4_args args;
+  args.pid = (pid_t)NUM2LONG(pid_value);
+  args.flags = NUM2INT(flags_value);
+
+  do {
+    memset(&args.usage, 0, sizeof(args.usage));
+    rb_thread_call_without_gvl(ll_wait4_without_gvl, &args, RUBY_UBF_IO, NULL);
+  } while (args.waited_pid < 0 && args.error_number == EINTR);
+
+  if (args.waited_pid == 0) {
+    return Qnil;
+  }
+  if (args.waited_pid < 0) {
+    rb_syserr_fail(args.error_number, "wait4");
+  }
+
+  rb_last_status_set(args.status, args.waited_pid);
+
+  VALUE user_seconds =
+      DBL2NUM((double)args.usage.ru_utime.tv_sec + (double)args.usage.ru_utime.tv_usec / 1000000.0);
+  VALUE system_seconds =
+      DBL2NUM((double)args.usage.ru_stime.tv_sec + (double)args.usage.ru_stime.tv_usec / 1000000.0);
+#ifdef __linux__
+  VALUE max_rss_bytes = ULL2NUM((unsigned long long)args.usage.ru_maxrss * 1024ULL);
+#else
+  VALUE max_rss_bytes = ULL2NUM((unsigned long long)args.usage.ru_maxrss);
+#endif
+
+  return rb_ary_new_from_args(4, rb_last_status_get(), user_seconds, system_seconds, max_rss_bytes);
+}
+
 void Init_landlock(void) {
   mLandlock = rb_define_module("Landlock");
 
@@ -150,6 +201,7 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_add_net_rule", rb_ll_add_net_rule, 3);
   rb_define_singleton_method(mLandlock, "_restrict_self", rb_ll_restrict_self, 1);
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
+  rb_define_singleton_method(mLandlock, "_wait4", rb_ll_wait4, 2);
   rb_define_singleton_method(mLandlock, "seccomp_deny_network!", rb_ll_seccomp_deny_network, 0);
 
   rb_define_const(mLandlock, "ACCESS_FS_EXECUTE", ULL2NUM(LANDLOCK_ACCESS_FS_EXECUTE));

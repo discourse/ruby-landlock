@@ -2,6 +2,7 @@
 
 require_relative "errors"
 require_relative "landlock"
+require_relative "result"
 
 module Landlock
   module Native
@@ -29,6 +30,14 @@ module Landlock
 
     def close_fd(fd)
       Landlock.__send__(:_close_fd, fd)
+    end
+
+    def wait4(pid, flags)
+      result = Landlock.__send__(:_wait4, pid, flags)
+      return unless result
+
+      status, user_seconds, system_seconds, max_rss_bytes = result
+      [status, ResourceUsage.new(user_seconds:, system_seconds:, max_rss_bytes:)]
     end
 
     def seccomp_deny_network!

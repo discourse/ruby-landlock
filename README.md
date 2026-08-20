@@ -92,7 +92,7 @@ result = Landlock.capture(
 metadata = JSON.parse(result.stdout) if result.success?
 ```
 
-`Landlock.capture` takes the command as a single argv array, like `Landlock.exec`. It returns a `Landlock::CaptureResult` with `stdout`, `stderr`, `status`, `success?`, `timed_out?`, and `output_truncated?`, including for unsuccessful exit statuses. It also supports array destructuring:
+`Landlock.capture` takes the command as a single argv array, like `Landlock.exec`. It returns a `Landlock::CaptureResult` with `stdout`, `stderr`, `status`, `success?`, `timed_out?`, `output_truncated?`, `elapsed_seconds`, and per-child `resource_usage`, including for unsuccessful exit statuses. Resource usage exposes `user_seconds`, `system_seconds`, their sum as `cpu_seconds`, and `max_rss_bytes`. It also supports array destructuring:
 
 ```ruby
 stdout, stderr, status = Landlock.capture(

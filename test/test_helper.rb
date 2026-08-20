@@ -28,6 +28,23 @@ class LandlockTestCase < Minitest::Test
     assert_equal forked.success?, native.success?, "#{name}: success"
     assert_equal forked.timed_out?, native.timed_out?, "#{name}: timed_out"
     assert_equal forked.output_truncated?, native.output_truncated?, "#{name}: output_truncated"
+    assert_kind_of Float, native.elapsed_seconds, "#{name}: native elapsed_seconds"
+    assert_kind_of Float, forked.elapsed_seconds, "#{name}: fork elapsed_seconds"
+    assert_kind_of Landlock::ResourceUsage, native.resource_usage, "#{name}: native resource_usage"
+    assert_kind_of Landlock::ResourceUsage, forked.resource_usage, "#{name}: fork resource_usage"
+    assert_operator native.elapsed_seconds, :>=, 0, "#{name}: native elapsed_seconds"
+    assert_operator forked.elapsed_seconds, :>=, 0, "#{name}: fork elapsed_seconds"
+    assert_operator native.resource_usage.max_rss_bytes, :>, 0, "#{name}: native max_rss_bytes"
+    assert_operator forked.resource_usage.max_rss_bytes, :>, 0, "#{name}: fork max_rss_bytes"
+    assert_in_delta forked.elapsed_seconds, native.elapsed_seconds, 0.5, "#{name}: elapsed_seconds parity"
+    assert_in_delta forked.resource_usage.cpu_seconds,
+                    native.resource_usage.cpu_seconds,
+                    0.5,
+                    "#{name}: cpu_seconds parity"
+    assert_in_delta forked.resource_usage.max_rss_bytes,
+                    native.resource_usage.max_rss_bytes,
+                    64 * 1024 * 1024,
+                    "#{name}: max_rss_bytes parity"
   end
 
   def capture_backend_result(runner, argv, **options)

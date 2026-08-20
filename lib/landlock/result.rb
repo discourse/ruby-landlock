@@ -1,8 +1,15 @@
 # frozen_string_literal: true
 
 module Landlock
+  ResourceUsage =
+    Data.define(:user_seconds, :system_seconds, :max_rss_bytes) do
+      def cpu_seconds
+        user_seconds + system_seconds
+      end
+    end
+
   module ResultBehavior
-    attr_reader :stdout, :stderr, :status
+    attr_reader :stdout, :stderr, :status, :elapsed_seconds, :resource_usage
 
     def success?
       !timed_out? && status&.success?
@@ -32,10 +39,20 @@ module Landlock
   class CaptureResult
     include ResultBehavior
 
-    def initialize(stdout:, stderr:, status:, output_truncated: false, timed_out: false)
+    def initialize(
+      stdout:,
+      stderr:,
+      status:,
+      elapsed_seconds:,
+      resource_usage:,
+      output_truncated: false,
+      timed_out: false
+    )
       @stdout = stdout
       @stderr = stderr
       @status = status
+      @elapsed_seconds = elapsed_seconds
+      @resource_usage = resource_usage
       @output_truncated = output_truncated
       @timed_out = timed_out
     end

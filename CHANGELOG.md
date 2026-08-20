@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- `Landlock.capture` results now report monotonic elapsed time and per-child user CPU, system CPU, total CPU, and peak resident memory usage. Resource usage remains available for unsuccessful exits, signals, timeouts, and output-limit termination.
+
 ## [0.4] - 2026-08-10
 
 ### Changed
