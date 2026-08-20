@@ -172,7 +172,12 @@ module Landlock
         result = ::Process.wait2(pid, ::Process::WNOHANG)
         if result
           status = result.last
-          return status, monotonic_time >= deadline
+          if monotonic_time >= deadline
+            terminate_process_group(pid)
+            return status, true
+          end
+
+          return status, false
         end
 
         IO.select(nil, nil, nil, [remaining, PID_WAIT_FALLBACK_INTERVAL_SECONDS].min)
@@ -267,6 +272,12 @@ module Landlock
       sleep 0.5
       signal_process("KILL", pid)
     end
+
+    def terminate_process_group(pid)
+      ::Process.kill("KILL", -pid)
+    rescue Errno::ESRCH, Errno::EPERM
+    end
+    private_class_method :terminate_process_group
 
     def signal_process(signal, pid)
       ::Process.kill(signal, -pid)

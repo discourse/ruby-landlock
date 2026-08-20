@@ -173,37 +173,60 @@ class LandlockCaptureTest < LandlockTestCase
     assert_predicate result.status, :success?
   end
 
-  def test_capture_does_not_signal_reaped_pid_when_deadline_expires_during_poll
+  def test_capture_fallback_kills_descendants_without_signaling_reaped_pid_when_deadline_expires_during_poll
     skip "Landlock unsupported" unless Landlock.supported?
 
-    pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno)
-    original_wait2 = Process.method(:wait2)
-    original_kill = Process.method(:kill)
-    child_reaped = false
-    wait2 =
-      lambda do |*arguments|
-        sleep 0.15 if arguments.last == Process::WNOHANG
-        original_wait2.call(*arguments).tap { |result| child_reaped = true if result }
-      end
-    kill =
-      lambda do |*arguments|
-        flunk "capture signaled a reused PID after reaping the child" if child_reaped
+    Dir.mktmpdir do |dir|
+      pidfile = File.join(dir, "descendant.pid")
+      pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno)
+      original_wait2 = Process.method(:wait2)
+      original_kill = Process.method(:kill)
+      child_reaped = false
+      wait2 =
+        lambda do |*arguments|
+          sleep 0.15 if arguments.last == Process::WNOHANG
+          original_wait2.call(*arguments).tap { |result| child_reaped = true if result }
+        end
+      kill =
+        lambda do |signal, target|
+          flunk "capture signaled a reused PID after reaping the child" if child_reaped && target.positive?
 
-        original_kill.call(*arguments)
-      end
+          original_kill.call(signal, target)
+        end
 
-    result = nil
-    Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
-      Process.stub(:wait2, wait2) do
-        Process.stub(:kill, kill) do
-          result =
-            Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; exit 0"], rlimits: { open_files: 64 }, timeout: 0.1)
+      result = nil
+      Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
+        Process.stub(:wait2, wait2) do
+          Process.stub(:kill, kill) do
+            result =
+              Landlock.capture(
+                [
+                  RbConfig.ruby,
+                  "--disable=gems",
+                  "-e",
+                  "pid = Process.fork { STDOUT.close; STDERR.close; sleep 30 }; File.write(ARGV.fetch(0), pid); STDOUT.close; STDERR.close",
+                  pidfile
+                ],
+                read: runtime_paths,
+                write: [dir],
+                execute: runtime_paths,
+                env: {
+                  "PATH" => ENV.fetch("PATH", "")
+                },
+                unsetenv_others: true,
+                timeout: 0.1
+              )
+          end
         end
       end
-    end
 
-    assert_predicate result, :timed_out?
-    assert_predicate result.status, :success?
+      assert_predicate result, :timed_out?
+      assert_predicate result.status, :success?
+      assert_path_exists pidfile
+      refute_process_alive Integer(File.read(pidfile))
+    ensure
+      kill_process_from_file(pidfile)
+    end
   end
 
   def test_capture_does_not_create_timeout_thread_after_streams_close
