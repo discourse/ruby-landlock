@@ -6,7 +6,35 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `Landlock.capture` results now report monotonic elapsed time and per-child user CPU, system CPU, total CPU, and peak resident memory usage. Resource usage remains available for unsuccessful exits, signals, timeouts, and output-limit termination.
+- `Landlock.capture` results now report monotonic elapsed time and user CPU, system CPU, total CPU, and peak resident memory usage for the direct process launched by the capture. Resource usage remains available for unsuccessful exits, signals, timeouts, and output-limit termination.
+
+  ```ruby
+  result = Landlock.capture(
+    ["magick", input_path, "-resize", "800x800>", output_path],
+    read: [input_path, "/usr", "/lib", "/lib64"],
+    write: [File.dirname(output_path)],
+    execute: ["/usr", "/lib", "/lib64"]
+  )
+
+  usage = result.resource_usage
+
+  result.elapsed_seconds    # Wall-clock seconds
+  usage.user_seconds        # CPU seconds spent in user mode
+  usage.system_seconds      # CPU seconds spent in kernel mode
+  usage.cpu_seconds         # user_seconds + system_seconds
+  usage.max_rss_bytes       # Peak resident memory in bytes
+  ```
+
+  `Landlock.capture!` exposes the same measurements on failed commands through `Landlock::CommandError#result`:
+
+  ```ruby
+  begin
+    Landlock.capture!(command, rlimits: { cpu_seconds: 5 })
+  rescue Landlock::CommandError => error
+    error.result.elapsed_seconds
+    error.result.resource_usage.cpu_seconds
+  end
+  ```
 
 ## [0.4] - 2026-08-10
 
