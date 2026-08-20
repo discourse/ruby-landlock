@@ -35,6 +35,10 @@
 #endif
 #endif
 
+#if defined(__linux__) && !defined(SYS_pidfd_open) && defined(__NR_pidfd_open)
+#define SYS_pidfd_open __NR_pidfd_open
+#endif
+
 #ifndef LANDLOCK_CREATE_RULESET_VERSION
 #define LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
 #endif

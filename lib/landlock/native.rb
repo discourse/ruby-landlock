@@ -31,6 +31,10 @@ module Landlock
       Landlock.__send__(:_close_fd, fd)
     end
 
+    def pidfd_open(pid)
+      Landlock.__send__(:_pidfd_open, pid)
+    end
+
     def seccomp_deny_network!
       Landlock.seccomp_deny_network!
     end

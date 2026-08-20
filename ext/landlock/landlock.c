@@ -121,6 +121,20 @@ static VALUE rb_ll_close_fd(VALUE self, VALUE fd_value) {
   return Qnil;
 }
 
+static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
+#ifdef SYS_pidfd_open
+  int fd = syscall(SYS_pidfd_open, NUM2PIDT(pid_value), 0);
+  if (fd < 0) {
+    raise_syscall_error("pidfd_open");
+  }
+  return INT2NUM(fd);
+#else
+  errno = ENOSYS;
+  raise_syscall_error("pidfd_open");
+  return Qnil;
+#endif
+}
+
 static VALUE rb_ll_seccomp_deny_network(VALUE self) {
   const char *error_message = "seccomp(SECCOMP_SET_MODE_FILTER)";
   if (rb_landlock_seccomp_deny_network(&error_message) != 0) {
@@ -150,6 +164,7 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_add_net_rule", rb_ll_add_net_rule, 3);
   rb_define_singleton_method(mLandlock, "_restrict_self", rb_ll_restrict_self, 1);
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
+  rb_define_singleton_method(mLandlock, "_pidfd_open", rb_ll_pidfd_open, 1);
   rb_define_singleton_method(mLandlock, "seccomp_deny_network!", rb_ll_seccomp_deny_network, 0);
 
   rb_define_const(mLandlock, "ACCESS_FS_EXECUTE", ULL2NUM(LANDLOCK_ACCESS_FS_EXECUTE));
