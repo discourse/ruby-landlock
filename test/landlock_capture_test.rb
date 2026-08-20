@@ -145,6 +145,73 @@ class LandlockCaptureTest < LandlockTestCase
     assert error.status.signaled?
   end
 
+  def test_capture_rechecks_deadline_after_pidfd_becomes_readable
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    pid_monitors = []
+    original_for_fd = IO.method(:for_fd)
+    original_select = IO.method(:select)
+    for_fd = ->(*arguments, **options) { original_for_fd.call(*arguments, **options).tap { |io| pid_monitors << io } }
+    select =
+      lambda do |readers, writers = nil, errors = nil, timeout = nil|
+        if readers&.any? { |io| pid_monitors.include?(io) }
+          original_select.call(readers, writers, errors, 5)
+        else
+          original_select.call(readers, writers, errors, timeout)
+        end
+      end
+
+    result = nil
+    IO.stub(:for_fd, for_fd) do
+      IO.stub(:select, select) do
+        result =
+          Landlock.capture(
+            ["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 0.15"],
+            rlimits: {
+              open_files: 64
+            },
+            timeout: 0.1
+          )
+      end
+    end
+
+    assert_predicate result, :timed_out?
+    assert_predicate result.status, :success?
+  end
+
+  def test_capture_rechecks_deadline_before_accepting_polled_status
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno)
+    original_select = IO.method(:select)
+    select =
+      lambda do |readers, writers = nil, errors = nil, timeout = nil|
+        if readers.nil? && writers.nil? && errors.nil?
+          sleep 1
+          nil
+        else
+          original_select.call(readers, writers, errors, timeout)
+        end
+      end
+
+    result = nil
+    Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
+      IO.stub(:select, select) do
+        result =
+          Landlock.capture(
+            ["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 0.15"],
+            rlimits: {
+              open_files: 64
+            },
+            timeout: 0.1
+          )
+      end
+    end
+
+    assert_predicate result, :timed_out?
+    assert_predicate result.status, :success?
+  end
+
   def test_capture_does_not_create_timeout_thread_after_streams_close
     skip "Landlock unsupported" unless Landlock.supported?
 

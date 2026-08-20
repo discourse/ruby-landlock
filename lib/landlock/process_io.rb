@@ -147,7 +147,7 @@ module Landlock
       pidfd = Native.pidfd_open(pid)
       pid_monitor = IO.for_fd(pidfd, autoclose: false)
       readable, = IO.select([pid_monitor], nil, nil, remaining)
-      unless readable
+      if !readable || monotonic_time >= deadline
         terminate_process(pid)
         return wait_for_pid(pid), true
       end
@@ -163,13 +163,21 @@ module Landlock
 
     def wait_for_pid_until_by_polling(pid, deadline:)
       loop do
-        result = ::Process.wait2(pid, ::Process::WNOHANG)
-        return result.last, false if result
-
         remaining = deadline - monotonic_time
         if remaining <= 0
           terminate_process(pid)
           return wait_for_pid(pid), true
+        end
+
+        result = ::Process.wait2(pid, ::Process::WNOHANG)
+        if result
+          status = result.last
+          if monotonic_time >= deadline
+            terminate_process(pid)
+            return status, true
+          end
+
+          return status, false
         end
 
         IO.select(nil, nil, nil, [remaining, PID_WAIT_FALLBACK_INTERVAL_SECONDS].min)
