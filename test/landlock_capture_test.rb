@@ -165,13 +165,7 @@ class LandlockCaptureTest < LandlockTestCase
     IO.stub(:for_fd, for_fd) do
       IO.stub(:select, select) do
         result =
-          Landlock.capture(
-            ["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 0.15"],
-            rlimits: {
-              open_files: 64
-            },
-            timeout: 0.1
-          )
+          Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 0.15"], rlimits: { open_files: 64 }, timeout: 0.1)
       end
     end
 
@@ -179,32 +173,32 @@ class LandlockCaptureTest < LandlockTestCase
     assert_predicate result.status, :success?
   end
 
-  def test_capture_rechecks_deadline_before_accepting_polled_status
+  def test_capture_does_not_signal_reaped_pid_when_deadline_expires_during_poll
     skip "Landlock unsupported" unless Landlock.supported?
 
     pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno)
-    original_select = IO.method(:select)
-    select =
-      lambda do |readers, writers = nil, errors = nil, timeout = nil|
-        if readers.nil? && writers.nil? && errors.nil?
-          sleep 1
-          nil
-        else
-          original_select.call(readers, writers, errors, timeout)
-        end
+    original_wait2 = Process.method(:wait2)
+    original_kill = Process.method(:kill)
+    child_reaped = false
+    wait2 =
+      lambda do |*arguments|
+        sleep 0.15 if arguments.last == Process::WNOHANG
+        original_wait2.call(*arguments).tap { |result| child_reaped = true if result }
+      end
+    kill =
+      lambda do |*arguments|
+        flunk "capture signaled a reused PID after reaping the child" if child_reaped
+
+        original_kill.call(*arguments)
       end
 
     result = nil
     Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
-      IO.stub(:select, select) do
-        result =
-          Landlock.capture(
-            ["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 0.15"],
-            rlimits: {
-              open_files: 64
-            },
-            timeout: 0.1
-          )
+      Process.stub(:wait2, wait2) do
+        Process.stub(:kill, kill) do
+          result =
+            Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; exit 0"], rlimits: { open_files: 64 }, timeout: 0.1)
+        end
       end
     end
 

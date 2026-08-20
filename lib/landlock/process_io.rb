@@ -172,12 +172,7 @@ module Landlock
         result = ::Process.wait2(pid, ::Process::WNOHANG)
         if result
           status = result.last
-          if monotonic_time >= deadline
-            terminate_process(pid)
-            return status, true
-          end
-
-          return status, false
+          return status, monotonic_time >= deadline
         end
 
         IO.select(nil, nil, nil, [remaining, PID_WAIT_FALLBACK_INTERVAL_SECONDS].min)
