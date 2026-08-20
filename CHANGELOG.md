@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.4.1] - 2026-08-20
+
+### Fixed
+
+- Remove the 100 ms child-exit polling interval from subprocess capture. Capture now drains stdout and stderr before waiting directly for the child, while preserving wall-clock timeout enforcement after both streams close.
+
 ## [0.4] - 2026-08-10
 
 ### Changed

@@ -105,6 +105,74 @@ class LandlockCaptureTest < LandlockTestCase
     refute result.timed_out?
   end
 
+  def test_capture_waits_for_child_exit_without_polling_after_streams_close
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    result = nil
+    Landlock::ProcessIO.stub(:sleep, ->(*) { flunk "capture polled for child exit" }) do
+      result =
+        Landlock.capture(
+          [RbConfig.ruby, "--disable=gems", "-e", "STDOUT.close; STDERR.close; sleep 0.25"],
+          rlimits: {
+            open_files: 64
+          }
+        )
+    end
+
+    assert result.status.success?
+    refute result.timed_out?
+  end
+
+  def test_capture_timeout_applies_after_streams_close
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    error =
+      assert_raises(Landlock::CommandError) do
+        Landlock.capture!(
+          ["/bin/sh", "-c", "exec 1>&- 2>&-; exec /bin/sleep 30"],
+          rlimits: {
+            open_files: 64
+          },
+          timeout: 0.1
+        )
+      end
+
+    assert error.result.timed_out?
+    refute_nil error.status
+    assert error.status.signaled?
+  end
+
+  def test_capture_cancels_timeout_when_waiting_for_child_raises
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    timeout_threads = []
+    wait_calls = 0
+    original_thread_new = Thread.method(:new)
+    original_wait_for_pid = Landlock::ProcessIO.method(:wait_for_pid)
+    thread_new =
+      lambda do |*arguments, &block|
+        original_thread_new.call(*arguments, &block).tap { |thread| timeout_threads << thread }
+      end
+    wait_for_pid =
+      lambda do |pid|
+        wait_calls += 1
+        raise IOError, "wait failed" if wait_calls == 1
+
+        original_wait_for_pid.call(pid)
+      end
+
+    Thread.stub(:new, thread_new) do
+      Landlock::ProcessIO.stub(:wait_for_pid, wait_for_pid) do
+        assert_raises(IOError) do
+          Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 30"], rlimits: { open_files: 64 }, timeout: 10)
+        end
+      end
+    end
+
+    assert_equal 1, timeout_threads.size
+    refute timeout_threads.first.alive?
+  end
+
   def test_capture_does_not_wait_forever_for_blocked_stdin_reader
     skip "Landlock unsupported" unless Landlock.supported?
 

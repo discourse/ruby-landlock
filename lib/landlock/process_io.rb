@@ -5,7 +5,6 @@ require_relative "result"
 
 module Landlock
   READ_CHUNK_BYTES = 16 * 1024
-  PROCESS_POLL_SECONDS = 0.1
   STDIN_THREAD_JOIN_SECONDS = 0.1
   POST_TIMEOUT_DRAIN_SECONDS = 0.05
 
@@ -91,45 +90,16 @@ module Landlock
       timed_out = false
       status = nil
 
-      until streams.empty? && status
+      until streams.empty?
         if deadline
           remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
           if remaining <= 0
             timed_out = true
-            terminate_process(pid)
-            status = wait_for_pid(pid)
-            drain_streams_until(
-              streams,
-              ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + POST_TIMEOUT_DRAIN_SECONDS,
-              max_output_bytes,
-              truncate_output,
-              state,
-              pid
-            )
-            close_streams(streams)
             break
           end
         end
 
-        status ||= poll_pid(pid)
-
-        break if streams.empty? && status
-
-        wait =
-          (
-            if deadline
-              [deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC), PROCESS_POLL_SECONDS].min
-            else
-              PROCESS_POLL_SECONDS
-            end
-          )
-        wait = 0 if wait.negative?
-        if streams.empty?
-          sleep wait
-          next
-        end
-
-        readable, = IO.select(streams.keys, nil, nil, wait)
+        readable, = IO.select(streams.keys, nil, nil, remaining)
         next unless readable
 
         readable.each do |io|
@@ -145,16 +115,63 @@ module Landlock
         end
       end
 
-      status ||= wait_for_pid(pid)
+      if deadline
+        status, timed_out = wait_for_pid_until(pid, deadline:)
+      else
+        status = wait_for_pid(pid)
+      end
+
+      if timed_out
+        drain_streams_until(
+          streams,
+          ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + POST_TIMEOUT_DRAIN_SECONDS,
+          max_output_bytes,
+          truncate_output,
+          state,
+          pid
+        )
+        close_streams(streams)
+      end
+
       [status, timed_out]
     end
 
-    def poll_pid(pid)
-      result = ::Process.wait2(pid, ::Process::WNOHANG)
-      result&.last
-    rescue Errno::ECHILD
-      nil
+    def wait_for_pid_until(pid, deadline:)
+      remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+      if remaining <= 0
+        terminate_process(pid)
+        return wait_for_pid(pid), true
+      end
+
+      mutex = Mutex.new
+      timed_out = false
+      timeout_thread =
+        Thread.new do
+          sleep remaining
+          mutex.synchronize { timed_out = true }
+          terminate_process(pid)
+        end
+
+      begin
+        status = wait_for_pid(pid)
+        timeout_started =
+          mutex.synchronize do
+            if timed_out
+              true
+            else
+              timeout_thread.kill
+              false
+            end
+          end
+        timeout_started ? timeout_thread.value : timeout_thread.join
+
+        [status, timeout_started]
+      ensure
+        timeout_thread.kill
+        timeout_thread.join
+      end
     end
+    private_class_method :wait_for_pid_until
 
     def wait_for_pid(pid)
       ::Process.wait2(pid).last
