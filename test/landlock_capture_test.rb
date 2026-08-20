@@ -126,33 +126,52 @@ class LandlockCaptureTest < LandlockTestCase
   def test_capture_timeout_applies_after_streams_close
     skip "Landlock unsupported" unless Landlock.supported?
 
-    error =
-      assert_raises(Landlock::CommandError) do
-        Landlock.capture!(
-          ["/bin/sh", "-c", "exec 1>&- 2>&-; exec /bin/sleep 30"],
-          rlimits: {
-            open_files: 64
-          },
-          timeout: 0.1
-        )
-      end
+    error = nil
+    Thread.stub(:new, ->(*) { flunk "capture created a timeout thread" }) do
+      error =
+        assert_raises(Landlock::CommandError) do
+          Landlock.capture!(
+            ["/bin/sh", "-c", "exec 1>&- 2>&-; exec /bin/sleep 30"],
+            rlimits: {
+              open_files: 64
+            },
+            timeout: 0.1
+          )
+        end
+    end
 
     assert error.result.timed_out?
     refute_nil error.status
     assert error.status.signaled?
   end
 
-  def test_capture_cancels_timeout_when_waiting_for_child_raises
+  def test_capture_does_not_create_timeout_thread_after_streams_close
     skip "Landlock unsupported" unless Landlock.supported?
 
-    timeout_threads = []
+    result = nil
+    Thread.stub(:new, ->(*) { flunk "capture created a timeout thread" }) do
+      result =
+        Landlock.capture(
+          [RbConfig.ruby, "--disable=gems", "-e", "STDOUT.close; STDERR.close; sleep 0.1"],
+          rlimits: {
+            open_files: 64
+          },
+          timeout: 5
+        )
+    end
+
+    assert result.status.success?
+    refute result.timed_out?
+  end
+
+  def test_capture_closes_pid_monitor_when_waiting_for_child_raises
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    pid_monitors = []
     wait_calls = 0
-    original_thread_new = Thread.method(:new)
+    original_for_fd = IO.method(:for_fd)
     original_wait_for_pid = Landlock::ProcessIO.method(:wait_for_pid)
-    thread_new =
-      lambda do |*arguments, &block|
-        original_thread_new.call(*arguments, &block).tap { |thread| timeout_threads << thread }
-      end
+    for_fd = ->(*arguments, **options) { original_for_fd.call(*arguments, **options).tap { |io| pid_monitors << io } }
     wait_for_pid =
       lambda do |pid|
         wait_calls += 1
@@ -161,16 +180,88 @@ class LandlockCaptureTest < LandlockTestCase
         original_wait_for_pid.call(pid)
       end
 
-    Thread.stub(:new, thread_new) do
+    IO.stub(:for_fd, for_fd) do
       Landlock::ProcessIO.stub(:wait_for_pid, wait_for_pid) do
         assert_raises(IOError) do
-          Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 30"], rlimits: { open_files: 64 }, timeout: 10)
+          Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 0.1"], rlimits: { open_files: 64 }, timeout: 10)
         end
       end
     end
 
-    assert_equal 1, timeout_threads.size
-    refute timeout_threads.first.alive?
+    assert_equal 1, pid_monitors.size
+    assert_predicate pid_monitors.first, :closed?
+  end
+
+  def test_capture_closes_raw_pidfd_when_wrapping_it_raises
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    pidfd = nil
+    closed_pidfds = []
+    original_pidfd_open = Landlock::Native.method(:pidfd_open)
+    original_close_fd = Landlock::Native.method(:close_fd)
+    pidfd_open = ->(pid) { original_pidfd_open.call(pid).tap { |fd| pidfd = fd } }
+    close_fd =
+      lambda do |fd|
+        closed_pidfds << fd if fd == pidfd
+        original_close_fd.call(fd)
+      end
+
+    Landlock::Native.stub(:pidfd_open, pidfd_open) do
+      Landlock::Native.stub(:close_fd, close_fd) do
+        IO.stub(:for_fd, ->(*) { raise IOError, "wrap failed" }) do
+          assert_raises(IOError) do
+            Landlock.capture(["/bin/sh", "-c", "exec 1>&- 2>&-; sleep 30"], rlimits: { open_files: 64 }, timeout: 10)
+          end
+        end
+      end
+    end
+
+    refute_nil pidfd
+    assert_equal [pidfd], closed_pidfds
+  end
+
+  def test_capture_falls_back_without_a_timeout_thread_when_pidfd_is_unavailable
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::EPERM::Errno)
+    result = nil
+    Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
+      Thread.stub(:new, ->(*) { flunk "capture created a timeout thread" }) do
+        result =
+          Landlock.capture(
+            [RbConfig.ruby, "--disable=gems", "-e", "STDOUT.close; STDERR.close; sleep 0.1"],
+            rlimits: {
+              open_files: 64
+            },
+            timeout: 5
+          )
+      end
+    end
+
+    assert result.status.success?
+    refute result.timed_out?
+  end
+
+  def test_capture_fallback_enforces_timeout_when_pidfd_is_unavailable
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno)
+    result = nil
+    Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
+      Thread.stub(:new, ->(*) { flunk "capture created a timeout thread" }) do
+        result =
+          Landlock.capture(
+            ["/bin/sh", "-c", "exec 1>&- 2>&-; exec /bin/sleep 30"],
+            rlimits: {
+              open_files: 64
+            },
+            timeout: 0.1
+          )
+      end
+    end
+
+    assert result.timed_out?
+    assert_predicate result.status, :signaled?
   end
 
   def test_capture_does_not_wait_forever_for_blocked_stdin_reader

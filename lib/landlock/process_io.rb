@@ -5,6 +5,7 @@ require_relative "result"
 
 module Landlock
   READ_CHUNK_BYTES = 16 * 1024
+  PID_WAIT_FALLBACK_INTERVAL_SECONDS = 0.1
   STDIN_THREAD_JOIN_SECONDS = 0.1
   POST_TIMEOUT_DRAIN_SECONDS = 0.05
 
@@ -137,41 +138,51 @@ module Landlock
     end
 
     def wait_for_pid_until(pid, deadline:)
-      remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+      remaining = deadline - monotonic_time
       if remaining <= 0
         terminate_process(pid)
         return wait_for_pid(pid), true
       end
 
-      mutex = Mutex.new
-      timed_out = false
-      timeout_thread =
-        Thread.new do
-          sleep remaining
-          mutex.synchronize { timed_out = true }
-          terminate_process(pid)
-        end
-
-      begin
-        status = wait_for_pid(pid)
-        timeout_started =
-          mutex.synchronize do
-            if timed_out
-              true
-            else
-              timeout_thread.kill
-              false
-            end
-          end
-        timeout_started ? timeout_thread.value : timeout_thread.join
-
-        [status, timeout_started]
-      ensure
-        timeout_thread.kill
-        timeout_thread.join
+      pidfd = Native.pidfd_open(pid)
+      pid_monitor = IO.for_fd(pidfd, autoclose: false)
+      readable, = IO.select([pid_monitor], nil, nil, remaining)
+      unless readable
+        terminate_process(pid)
+        return wait_for_pid(pid), true
       end
+
+      [wait_for_pid(pid), false]
+    rescue Landlock::SyscallError
+      wait_for_pid_until_by_polling(pid, deadline:)
+    ensure
+      close_stream(pid_monitor) if pid_monitor
+      Native.close_fd(pidfd) if pidfd
     end
     private_class_method :wait_for_pid_until
+
+    def wait_for_pid_until_by_polling(pid, deadline:)
+      loop do
+        result = ::Process.wait2(pid, ::Process::WNOHANG)
+        return result.last, false if result
+
+        remaining = deadline - monotonic_time
+        if remaining <= 0
+          terminate_process(pid)
+          return wait_for_pid(pid), true
+        end
+
+        IO.select(nil, nil, nil, [remaining, PID_WAIT_FALLBACK_INTERVAL_SECONDS].min)
+      end
+    rescue Errno::ECHILD
+      [nil, false]
+    end
+    private_class_method :wait_for_pid_until_by_polling
+
+    def monotonic_time
+      ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+    end
+    private_class_method :monotonic_time
 
     def wait_for_pid(pid)
       ::Process.wait2(pid).last
