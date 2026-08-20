@@ -7,6 +7,8 @@ require_relative "result"
 module Landlock
   READ_CHUNK_BYTES = 16 * 1024
   PROCESS_POLL_SECONDS = 0.1
+  TERMINATION_POLL_SECONDS = 0.01
+  TERMINATION_GRACE_SECONDS = 0.5
   STDIN_THREAD_JOIN_SECONDS = 0.1
   POST_TIMEOUT_DRAIN_SECONDS = 0.05
 
@@ -28,36 +30,41 @@ module Landlock
 
       stdout = +"".b
       stderr = +"".b
-      state = { bytes: 0, truncated: false }
+      state = { bytes: 0, truncated: false, wait_result: nil, timed_out: false, elapsed_seconds: nil, started_at: }
       begin
-        wait_result, timed_out, elapsed_seconds =
-          read_and_wait(
-            pid,
-            { stdout_reader => stdout, stderr_reader => stderr },
-            started_at,
-            timeout,
-            max_output_bytes,
-            truncate_output,
-            state
-          )
+        read_and_wait(
+          pid,
+          { stdout_reader => stdout, stderr_reader => stderr },
+          timeout,
+          max_output_bytes,
+          truncate_output,
+          state
+        )
       rescue OutputTooLargeError => error
-        wait_result ||= wait_for_pid(pid)
-        elapsed_seconds ||= monotonic_time - started_at
-        error.result =
-          capture_result(stdout:, stderr:, wait_result:, elapsed_seconds:, output_truncated: true, timed_out:)
+        record_wait_result(state, wait_for_pid(pid)) unless state[:wait_result]
+        state[:elapsed_seconds] ||= monotonic_time - started_at
+        error.result = capture_result(stdout:, stderr:, state:, output_truncated: true)
         raise
       ensure
         finish_input_thread(stdin_thread, stdin_writer)
       end
 
-      capture_result(stdout:, stderr:, wait_result:, elapsed_seconds:, output_truncated: state[:truncated], timed_out:)
+      capture_result(stdout:, stderr:, state:, output_truncated: state[:truncated])
     end
 
-    def capture_result(stdout:, stderr:, wait_result:, elapsed_seconds:, output_truncated:, timed_out:)
+    def capture_result(stdout:, stderr:, state:, output_truncated:)
       stdout.force_encoding(Encoding.default_external)
       stderr.force_encoding(Encoding.default_external)
-      status, resource_usage = wait_result
-      CaptureResult.new(stdout:, stderr:, status:, elapsed_seconds:, resource_usage:, output_truncated:, timed_out:)
+      status, resource_usage = state[:wait_result]
+      CaptureResult.new(
+        stdout:,
+        stderr:,
+        status:,
+        elapsed_seconds: state[:elapsed_seconds],
+        resource_usage:,
+        output_truncated:,
+        timed_out: state[:timed_out]
+      )
     end
 
     def write_input(io, input)
@@ -92,22 +99,16 @@ module Landlock
       end
     end
 
-    def read_and_wait(pid, streams, started_at, timeout, max_output_bytes, truncate_output, state)
-      deadline = timeout ? started_at + timeout : nil
-      timed_out = false
-      wait_result = nil
-      elapsed_seconds = nil
+    def read_and_wait(pid, streams, timeout, max_output_bytes, truncate_output, state)
+      deadline = timeout ? state[:started_at] + timeout : nil
 
-      until streams.empty? && wait_result
+      until streams.empty? && state[:wait_result]
         if deadline
           remaining = deadline - monotonic_time
           if remaining <= 0
-            timed_out = true
-            terminate_process(pid)
-            unless wait_result
-              wait_result = wait_for_pid(pid)
-              elapsed_seconds = monotonic_time - started_at
-            end
+            state[:timed_out] = true
+            wait_result, reaped_at = terminate_and_wait(pid)
+            record_wait_result(state, wait_result, reaped_at:)
             drain_streams_until(
               streams,
               monotonic_time + POST_TIMEOUT_DRAIN_SECONDS,
@@ -121,12 +122,19 @@ module Landlock
           end
         end
 
-        unless wait_result
-          wait_result = poll_pid(pid)
-          elapsed_seconds = monotonic_time - started_at if wait_result
+        record_wait_result(state, poll_pid(pid)) unless state[:wait_result]
+
+        break if streams.empty? && state[:wait_result]
+
+        if streams.empty? && deadline
+          sleep [deadline - monotonic_time, TERMINATION_POLL_SECONDS].min.clamp(0, TERMINATION_POLL_SECONDS)
+          next
         end
 
-        break if streams.empty? && wait_result
+        if streams.empty?
+          record_wait_result(state, wait_for_pid(pid))
+          break
+        end
 
         wait =
           (
@@ -137,11 +145,6 @@ module Landlock
             end
           )
         wait = 0 if wait.negative?
-        if streams.empty?
-          sleep wait
-          next
-        end
-
         readable, = IO.select(streams.keys, nil, nil, wait)
         next unless readable
 
@@ -158,11 +161,7 @@ module Landlock
         end
       end
 
-      unless wait_result
-        wait_result = wait_for_pid(pid)
-        elapsed_seconds = monotonic_time - started_at
-      end
-      [wait_result, timed_out, elapsed_seconds]
+      record_wait_result(state, wait_for_pid(pid)) unless state[:wait_result]
     end
 
     def poll_pid(pid)
@@ -172,14 +171,17 @@ module Landlock
     end
 
     def wait_for_pid(pid)
-      loop do
-        result = Native.wait4(pid, ::Process::WNOHANG)
-        return result if result
-
-        sleep PROCESS_POLL_SECONDS
-      end
+      Native.wait4(pid, 0)
     rescue Errno::ECHILD
       nil
+    end
+
+    def record_wait_result(state, wait_result, reaped_at: monotonic_time)
+      return unless wait_result
+      return if state[:wait_result]
+
+      state[:wait_result] = wait_result
+      state[:elapsed_seconds] = reaped_at - state[:started_at]
     end
 
     def close_stream(io)
@@ -247,14 +249,37 @@ module Landlock
       buffer << chunk_to_append
       return unless over_limit
 
-      terminate_process(pid)
+      wait_result, reaped_at = terminate_and_wait(pid)
+      record_wait_result(state, wait_result, reaped_at:)
       raise output_too_large_error, "Process output exceeded #{max_output_bytes} bytes" unless truncate_output
     end
 
-    def terminate_process(pid)
+    def terminate_and_wait(pid)
       signal_process("TERM", pid)
-      sleep 0.5
-      signal_process("KILL", pid)
+      deadline = monotonic_time + TERMINATION_GRACE_SECONDS
+      wait_result = nil
+      reaped_at = nil
+
+      loop do
+        unless wait_result
+          wait_result = poll_pid(pid)
+          reaped_at = monotonic_time if wait_result
+        end
+        break unless process_group_alive?(pid)
+
+        remaining_seconds = deadline - monotonic_time
+        break if remaining_seconds <= 0
+
+        sleep [remaining_seconds, TERMINATION_POLL_SECONDS].min
+      end
+
+      signal_process("KILL", pid) if process_group_alive?(pid)
+      unless wait_result
+        wait_result = wait_for_pid(pid)
+        reaped_at = monotonic_time if wait_result
+      end
+
+      [wait_result, reaped_at]
     end
 
     def signal_process(signal, pid)
@@ -264,6 +289,15 @@ module Landlock
         ::Process.kill(signal, pid)
       rescue Errno::ESRCH, Errno::EPERM
       end
+    end
+
+    def process_group_alive?(pid)
+      ::Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
     end
 
     def monotonic_time

@@ -128,10 +128,7 @@ module Landlock
       rescue OutputTooLargeError
         raise
       rescue Exception
-        if pid
-          ProcessIO.terminate_process(pid)
-          ProcessIO.wait_for_pid(pid)
-        end
+        ProcessIO.terminate_and_wait(pid) if pid
         raise
       ensure
         [stdin_reader, stdin_writer, stdout_reader, stdout_writer, stderr_reader, stderr_writer].each do |io|

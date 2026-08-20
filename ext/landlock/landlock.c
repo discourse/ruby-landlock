@@ -141,20 +141,22 @@ static VALUE rb_ll_seccomp_deny_network(VALUE self) {
   return Qtrue;
 }
 
+#ifdef HAVE_WAIT4
 static void *ll_wait4_without_gvl(void *pointer) {
   struct rb_landlock_wait4_args *args = pointer;
   args->waited_pid = wait4(args->pid, &args->status, args->flags, &args->usage);
   args->error_number = args->waited_pid < 0 ? errno : 0;
   return NULL;
 }
+#endif
 
 static VALUE rb_ll_wait4(VALUE self, VALUE pid_value, VALUE flags_value) {
+#ifdef HAVE_WAIT4
   struct rb_landlock_wait4_args args;
   args.pid = (pid_t)NUM2LONG(pid_value);
   args.flags = NUM2INT(flags_value);
 
   do {
-    memset(&args.usage, 0, sizeof(args.usage));
     rb_thread_call_without_gvl(ll_wait4_without_gvl, &args, RUBY_UBF_IO, NULL);
   } while (args.waited_pid < 0 && args.error_number == EINTR);
 
@@ -178,6 +180,9 @@ static VALUE rb_ll_wait4(VALUE self, VALUE pid_value, VALUE flags_value) {
 #endif
 
   return rb_ary_new_from_args(4, rb_last_status_get(), user_seconds, system_seconds, max_rss_bytes);
+#else
+  rb_raise(rb_eNotImpError, "wait4 is unavailable on this platform");
+#endif
 }
 
 void Init_landlock(void) {

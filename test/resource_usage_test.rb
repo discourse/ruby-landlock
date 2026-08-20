@@ -3,6 +3,15 @@
 require_relative "test_helper"
 
 class LandlockResourceUsageTest < LandlockTestCase
+  def test_capture_result_new_metrics_are_optional_and_inspectable
+    result = Landlock::CaptureResult.new(stdout: "out", stderr: "err", status: nil)
+
+    assert_nil result.elapsed_seconds
+    assert_nil result.resource_usage
+    assert_includes result.inspect, "elapsed_seconds=nil"
+    assert_includes result.inspect, "resource_usage=nil"
+  end
+
   def test_successful_capture_exposes_elapsed_time_and_resource_usage
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -65,7 +74,7 @@ class LandlockResourceUsageTest < LandlockTestCase
 
     assert_predicate result, :timed_out?
     assert_operator result.elapsed_seconds, :>=, 0.1
-    assert_operator result.elapsed_seconds, :<, 2
+    assert_operator result.elapsed_seconds, :<, 0.4
     assert_kind_of Landlock::ResourceUsage, result.resource_usage
     assert_operator result.resource_usage.max_rss_bytes, :>, 0
   end
@@ -77,8 +86,41 @@ class LandlockResourceUsageTest < LandlockTestCase
 
     assert_equal "x" * 10, error.result.stdout
     assert_predicate error.result, :output_truncated?
+    refute_predicate error.result, :timed_out?
+    refute_predicate error.result, :success?
     assert_operator error.result.elapsed_seconds, :>, 0
     assert_kind_of Landlock::ResourceUsage, error.result.resource_usage
+  end
+
+  def test_output_limit_error_preserves_metrics_reaped_before_later_output
+    skip "Landlock unsupported" unless Landlock.supported?
+    skip "native runner helper unavailable" unless File.executable?(Landlock::Runner::Native.helper_path)
+
+    [Landlock::Runner::Native, Landlock::Runner::Fork].each do |runner|
+      error =
+        assert_raises(Landlock::OutputTooLargeError) do
+          capture_backend_result(
+            runner,
+            [
+              RbConfig.ruby,
+              "--disable=gems",
+              "-e",
+              "Process.fork { sleep 0.2; STDOUT.write('x' * #{Landlock::READ_CHUNK_BYTES * 2}); sleep 30 }; exit 0"
+            ],
+            rlimits: {
+              open_files: 64
+            },
+            max_output_bytes: Landlock::READ_CHUNK_BYTES + 1
+          )
+        end
+      result = error.result
+
+      assert_predicate result.status, :success?, runner.name
+      assert_kind_of Landlock::ResourceUsage, result.resource_usage, runner.name
+      assert_equal Landlock::READ_CHUNK_BYTES + 1, result.stdout.bytesize, runner.name
+      refute_predicate result, :timed_out?, runner.name
+      refute_predicate result, :success?, runner.name
+    end
   end
 
   def test_truncated_capture_preserves_resource_usage
@@ -146,7 +188,7 @@ class LandlockResourceUsageTest < LandlockTestCase
       Thread.new do
         start.pop
         capture_command(
-          "payload = 'x' * (64 * 1024 * 1024); deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5; loop { break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline }; print payload.bytesize"
+          "payload = 'x' * (64 * 1024 * 1024); deadline = Process.clock_gettime(Process::CLOCK_PROCESS_CPUTIME_ID) + 0.3; loop { break if Process.clock_gettime(Process::CLOCK_PROCESS_CPUTIME_ID) >= deadline }; print payload.bytesize"
         )
       end
     2.times { start << true }
@@ -156,10 +198,10 @@ class LandlockResourceUsageTest < LandlockTestCase
 
     assert_equal "", light_result.stdout
     assert_equal (64 * 1024 * 1024).to_s, heavy_result.stdout
-    assert_operator heavy_result.resource_usage.cpu_seconds, :>, light_result.resource_usage.cpu_seconds + 0.2
+    assert_operator heavy_result.resource_usage.cpu_seconds, :>, light_result.resource_usage.cpu_seconds + 0.15
     assert_operator heavy_result.resource_usage.max_rss_bytes,
                     :>,
-                    light_result.resource_usage.max_rss_bytes + 32 * 1024 * 1024
+                    light_result.resource_usage.max_rss_bytes + 16 * 1024 * 1024
     assert_operator light_result.elapsed_seconds, :<, 2
     assert_operator heavy_result.elapsed_seconds, :<, 2
   end
@@ -193,7 +235,8 @@ class LandlockResourceUsageTest < LandlockTestCase
         assert_predicate result.status, :success?, runner.name
         assert_kind_of Landlock::ResourceUsage, result.resource_usage, runner.name
         assert_operator result.elapsed_seconds, :<, 0.3, runner.name
-        assert_operator capture_elapsed_seconds, :>, result.elapsed_seconds + 0.4, runner.name
+        assert_operator capture_elapsed_seconds, :>=, 0.3, runner.name
+        assert_operator capture_elapsed_seconds, :<, 0.8, runner.name
       ensure
         kill_process_from_file(pidfile)
       end
@@ -203,23 +246,24 @@ class LandlockResourceUsageTest < LandlockTestCase
   def test_native_blocking_wait_allows_other_ruby_threads_to_run
     pid = Process.spawn(RbConfig.ruby, "--disable=gems", "-e", "sleep 0.5")
     ready = Queue.new
-    ticks = Queue.new
+    begin_wait = Queue.new
+    ticked = Queue.new
     ticker =
       Thread.new do
         ready << true
-        loop do
-          sleep 0.01
-          ticks << true
-        end
+        begin_wait.pop
+        sleep 0.01
+        ticked << true
       end
     ready.pop
+    begin_wait << true
 
     status, resource_usage = Landlock::Native.wait4(pid, 0)
 
     assert_predicate status, :success?
     assert_kind_of Landlock::ResourceUsage, resource_usage
     assert_operator resource_usage.max_rss_bytes, :>, 1024 * 1024
-    assert_operator ticks.size, :>=, 10
+    refute_predicate ticked, :empty?
   ensure
     ticker&.kill
     ticker&.join

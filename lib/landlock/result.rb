@@ -12,7 +12,7 @@ module Landlock
     attr_reader :stdout, :stderr, :status, :elapsed_seconds, :resource_usage
 
     def success?
-      !timed_out? && status&.success?
+      !timed_out? && !output_truncated? && status&.success?
     end
 
     def output_truncated?
@@ -32,7 +32,7 @@ module Landlock
     end
 
     def inspect
-      "#<#{self.class} status=#{status.inspect} timed_out=#{timed_out?} output_truncated=#{output_truncated?} stdout=#{stdout.inspect} stderr=#{stderr.inspect}>"
+      "#<#{self.class} status=#{status.inspect} timed_out=#{timed_out?} output_truncated=#{output_truncated?} elapsed_seconds=#{elapsed_seconds.inspect} resource_usage=#{resource_usage.inspect} stdout=#{stdout.inspect} stderr=#{stderr.inspect}>"
     end
   end
 
@@ -43,8 +43,8 @@ module Landlock
       stdout:,
       stderr:,
       status:,
-      elapsed_seconds:,
-      resource_usage:,
+      elapsed_seconds: nil,
+      resource_usage: nil,
       output_truncated: false,
       timed_out: false
     )

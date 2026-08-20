@@ -105,6 +105,25 @@ class LandlockCaptureTest < LandlockTestCase
     refute result.timed_out?
   end
 
+  def test_capture_timeout_still_applies_after_streams_close
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result =
+      Landlock.capture(
+        [RbConfig.ruby, "--disable=gems", "-e", "STDOUT.close; STDERR.close; sleep 30"],
+        rlimits: {
+          open_files: 64
+        },
+        timeout: 0.1
+      )
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+    assert_operator elapsed, :<, 0.5
+    assert_predicate result, :timed_out?
+    assert_kind_of Landlock::ResourceUsage, result.resource_usage
+  end
+
   def test_capture_does_not_wait_forever_for_blocked_stdin_reader
     skip "Landlock unsupported" unless Landlock.supported?
 

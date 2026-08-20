@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `Landlock.capture` results now report monotonic elapsed time and user CPU, system CPU, total CPU, and peak resident memory usage for the direct process launched by the capture. Resource usage remains available for unsuccessful exits, signals, timeouts, and output-limit termination.
+- `Landlock.capture` results now report monotonic elapsed time and user CPU, system CPU, total CPU, and peak resident memory usage for the direct child selected by `wait4`. Operating-system accounting may include descendants that child reaped. Resource usage remains available for unsuccessful exits, signals, timeouts, and output-limit termination.
 
   ```ruby
   result = Landlock.capture(
