@@ -499,6 +499,31 @@ class LandlockCaptureTest < LandlockTestCase
     assert_equal "denied", result.stdout
   end
 
+  def test_capture_seccomp_denies_udp_socket
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    result =
+      Landlock.capture(
+        [
+          RbConfig.ruby,
+          "--disable=gems",
+          "-rsocket",
+          "-e",
+          "begin; Socket.new(:INET, :DGRAM); rescue Errno::EPERM; print 'denied'; end"
+        ],
+        read: runtime_paths,
+        execute: runtime_paths,
+        env: {
+          "PATH" => ENV.fetch("PATH", "")
+        },
+        unsetenv_others: true,
+        seccomp_deny_network: true
+      )
+
+    assert result.status.success?, result.stderr
+    assert_equal "denied", result.stdout
+  end
+
   def test_capture_custom_path_rule_allows_read
     skip "Landlock unsupported" unless Landlock.supported?
 
