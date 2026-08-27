@@ -114,9 +114,12 @@ module Landlock
         stdout_reader, stdout_writer = IO.pipe
         stderr_reader, stderr_writer = IO.pipe
         stdin_reader, stdin_writer = IO.pipe
+        parent_pid = ::Process.pid
 
         pid =
           fork do
+            Landlock::Native.set_parent_death_signal!
+            exit! 1 if ::Process.ppid != parent_pid
             stdout_reader.close
             stderr_reader.close
             stdin_writer.close

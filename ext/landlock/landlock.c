@@ -2,6 +2,7 @@
 #include "landlock_native.h"
 #include "seccomp_deny_network.h"
 
+#include <signal.h>
 #include <string.h>
 
 static VALUE mLandlock;
@@ -135,6 +136,18 @@ static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
 #endif
 }
 
+static VALUE rb_ll_set_parent_death_signal(VALUE self) {
+#ifdef __linux__
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
+    raise_syscall_error("prctl(PR_SET_PDEATHSIG)");
+  }
+  return Qtrue;
+#else
+  errno = ENOSYS;
+  raise_syscall_error("prctl(PR_SET_PDEATHSIG)");
+#endif
+}
+
 static VALUE rb_ll_seccomp_deny_network(VALUE self) {
   const char *error_message = "seccomp(SECCOMP_SET_MODE_FILTER)";
   if (rb_landlock_seccomp_deny_network(&error_message) != 0) {
@@ -165,6 +178,8 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_restrict_self", rb_ll_restrict_self, 1);
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
   rb_define_singleton_method(mLandlock, "_pidfd_open", rb_ll_pidfd_open, 1);
+  rb_define_singleton_method(mLandlock, "_set_parent_death_signal", rb_ll_set_parent_death_signal,
+                             0);
   rb_define_singleton_method(mLandlock, "seccomp_deny_network!", rb_ll_seccomp_deny_network, 0);
 
   rb_define_const(mLandlock, "ACCESS_FS_EXECUTE", ULL2NUM(LANDLOCK_ACCESS_FS_EXECUTE));

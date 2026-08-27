@@ -35,6 +35,10 @@ module Landlock
       Landlock.__send__(:_pidfd_open, pid)
     end
 
+    def set_parent_death_signal!
+      Landlock.__send__(:_set_parent_death_signal)
+    end
+
     def seccomp_deny_network!
       Landlock.seccomp_deny_network!
     end

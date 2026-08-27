@@ -46,6 +46,34 @@ class LandlockForkTest < LandlockTestCase
     refute_predicate result, :success?
   end
 
+  def test_fork_child_exits_with_its_parent
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    Dir.mktmpdir do |directory|
+      pid_path = File.join(directory, "child.pid")
+      supervisor_pid =
+        fork do
+          Landlock.fork(write: [directory]) do
+            File.write(pid_path, Process.pid)
+            sleep 30
+          end
+        end
+
+      sleep 0.01 until File.exist?(pid_path)
+      child_pid = Integer(File.read(pid_path))
+      Process.kill("KILL", supervisor_pid)
+      Process.waitpid(supervisor_pid)
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+      while process_alive?(child_pid) &&
+              Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+        sleep 0.01
+      end
+
+      refute process_alive?(child_pid)
+    end
+  end
+
   def test_fork_applies_the_filesystem_policy
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -110,5 +138,14 @@ class LandlockForkTest < LandlockTestCase
     error = assert_raises(ArgumentError) { Landlock.fork(rlimits: { open_files: 64 }) }
 
     assert_equal "fork requires a block", error.message
+  end
+
+  private
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    !File.read("/proc/#{pid}/stat").split.fetch(2).eql?("Z")
+  rescue Errno::ESRCH
+    false
   end
 end
