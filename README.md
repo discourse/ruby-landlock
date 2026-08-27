@@ -68,7 +68,7 @@ Landlock.exec(
 
 ## Capturing subprocess output
 
-`Landlock.capture` is the stdout/stderr-capturing sibling of `Landlock.exec`: it launches a child process, applies Landlock rules, resource limits, and the optional seccomp network-deny filter before the target command starts, then execs that command directly. When the packaged `landlock-safe-exec` helper is available, `exec`, `spawn`, and `capture` all spawn that small native helper with policy arguments so the parent does not need to fork a bloated Ruby process; they fall back to the Ruby fork path when the helper cannot be used or when an unusually large helper argv would exceed the platform `ARG_MAX`. Environment changes are applied by Ruby when spawning the helper rather than encoded in helper argv. Use `capture!` when unsuccessful exit statuses should raise.
+`Landlock.capture` is the stdout/stderr-capturing sibling of `Landlock.exec`: it launches a child process, applies Landlock rules, resource limits, and the optional seccomp network-deny filter before the target command starts, then execs that command directly. When the packaged `landlock-safe-exec` helper is available, `exec`, `spawn`, and `capture` all spawn that small native helper with policy arguments so the parent does not need to fork a bloated Ruby process. When the helper cannot be used, they fall back to a Ruby child that applies the restrictions and still execs the requested command. Environment changes are applied by Ruby when spawning the helper rather than encoded in helper argv. Use `capture!` when unsuccessful exit statuses should raise.
 
 ```ruby
 result = Landlock.capture(
@@ -104,7 +104,7 @@ stdout, stderr, status = Landlock.capture(
 
 `Landlock.capture!` has the same return shape for successful commands, but raises `Landlock::CommandError` for unsuccessful statuses. The error also exposes `stdout`, `stderr`, `status`, and `result`.
 
-`Landlock.capture` and `Landlock.capture_fork` require an actual restriction: provide Landlock rules, `seccomp_deny_network: true`, or `rlimits:`. This avoids accidentally running work completely unsandboxed when a dynamically built policy is empty. They also require Linux Landlock support and raise `Landlock::UnsupportedError` when unavailable; they do not fall back to running work unsandboxed.
+`Landlock.capture` and `Landlock.fork` require an actual restriction: provide Landlock rules, `seccomp_deny_network: true`, or `rlimits:`. This avoids accidentally running work completely unsandboxed when a dynamically built policy is empty. They also require Linux Landlock support and raise `Landlock::UnsupportedError` when unavailable; they do not fall back to running work unsandboxed.
 
 Pass `stdin:` when a tool should read from standard input instead of a file:
 
@@ -135,12 +135,12 @@ Capture options:
 - `success_status_codes:` and `failure_message:` — `capture!` failure handling options.
 - `allow_all_known:` — when filesystem rules are present, handle all Landlock filesystem rights known to the running ABI so unlisted filesystem access is denied.
 
-## Capturing a forked Ruby block
+## Forking a Ruby block
 
-`Landlock.capture_fork` forks the current Ruby process, applies the requested restrictions in the child, runs the block there, and returns a `Landlock::CaptureResult`. It is intended for applications that need to reuse initialized Ruby state without executing a new command:
+`Landlock.fork` is a supervised, synchronous fork. It forks the current Ruby process, applies the requested restrictions in the child, runs the block there, waits for it, and returns a `Landlock::CaptureResult`. It is intended for applications that need to reuse initialized Ruby state without executing a new command:
 
 ```ruby
-result = Landlock.capture_fork(
+result = Landlock.fork(
   read: [input_path],
   write: [File.dirname(output_path)],
   timeout: 5,
@@ -151,9 +151,9 @@ result = Landlock.capture_fork(
 end
 ```
 
-The block runs in a separate process. Its return value is discarded; write response data to stdout and inspect the capture result. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `capture_fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr. Pass `close_others: false` only when the block intentionally needs an inherited descriptor.
+The block runs in a separate process. Its return value is discarded; write response data to stdout and inspect the capture result. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr. Pass `close_others: false` only when the block intentionally needs an inherited descriptor.
 
-Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `capture_fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
+Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `Landlock.fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
 
 ## Restrict current process
 
@@ -221,11 +221,11 @@ Treat small positive or negative deltas as noise and benchmark on the kernel, fi
 
 Landlock is not a complete container. It restricts selected kernel-mediated actions for the current thread and its future descendants, but it does not create namespaces, hide process IDs, virtualize the filesystem, or isolate the process from every kernel interface. For serious untrusted execution, combine Landlock with a controlled environment, resource limits, seccomp, and process isolation appropriate to your threat model.
 
-`Landlock.restrict!` only installs a Landlock ruleset. It does not close already-open file descriptors, impose resource limits, clean the environment, or kill subprocess trees. The subprocess helpers add practical hardening around this: `exec`/`spawn` add controlled environments and `close_others`, while `capture` and `capture_fork` also add optional `rlimits:`, optional `seccomp_deny_network:`, output limits, timeout handling, and process-group termination. This is still not a VM/container boundary. By default, `exec`, `spawn`, and `capture` close inherited file descriptors numbered 3 and higher before installing the sandbox. `capture_fork` closes inherited Ruby `IO` objects, but native extensions may hold descriptors Ruby does not expose as `IO` objects. Pass `close_others: false` only when the child intentionally needs inherited descriptors. Direct `landlock-safe-exec` use also closes inherited descriptors by default.
+`Landlock.restrict!` only installs a Landlock ruleset. It does not close already-open file descriptors, impose resource limits, clean the environment, or kill subprocess trees. The subprocess helpers add practical hardening around this: `exec`/`spawn` add controlled environments and `close_others`, while `capture` and `fork` also add optional `rlimits:`, optional `seccomp_deny_network:`, output limits, timeout handling, and process-group termination. This is still not a VM/container boundary. By default, `exec`, `spawn`, and `capture` close inherited file descriptors numbered 3 and higher before installing the sandbox. `Landlock.fork` closes inherited Ruby `IO` objects, but native extensions may hold descriptors Ruby does not expose as `IO` objects. Pass `close_others: false` only when the child intentionally needs inherited descriptors. Direct `landlock-safe-exec` use also closes inherited descriptors by default.
 
 When the native helper is used, sandbox policy details such as allowed paths, TCP ports, scopes, rights, and rlimits are passed as helper argv. They may be visible to same-user processes through tools such as `ps` or `/proc/<pid>/cmdline` until the helper execs the target command. Environment values passed with `env:` are not encoded in helper argv, but do not put secrets in policy path names or other policy arguments.
 
-If `Landlock.exec`, `Landlock.spawn`, `Landlock.capture`, or `Landlock.capture_fork` child setup fails, the child prints a diagnostic and exits 127. A `capture_fork` block exception exits 1. `landlock-safe-exec` setup/argument failures exit 126. These codes can collide with commands that legitimately exit with the same status, so inspect stderr when debugging failures.
+If `Landlock.exec`, `Landlock.spawn`, `Landlock.capture`, or `Landlock.fork` child setup fails, the child prints a diagnostic and exits 127. A `Landlock.fork` block exception exits 1. `landlock-safe-exec` setup/argument failures exit 126. These codes can collide with commands that legitimately exit with the same status, so inspect stderr when debugging failures.
 
 Path rules follow the kernel's normal path resolution when the rule is installed. Because paths are opened without `O_NOFOLLOW`, a symlink rule applies to the symlink target's inode, not to the symlink path itself. Capture APIs validate explicit `read:`, `write:`, and `execute:` paths before launching so typos fail closed instead of silently weakening a policy.
 

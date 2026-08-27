@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Add `Landlock.capture_fork` for capturing a sandboxed Ruby block in a forked child.
+- Add `Landlock.fork` for running a sandboxed Ruby block in a supervised forked child.
 
 ## [0.4.1] - 2026-08-20
 

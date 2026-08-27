@@ -40,8 +40,8 @@ module Landlock
       Execution.capture!(...)
     end
 
-    def capture_fork(...)
-      Execution.capture_fork(...)
+    def fork(...)
+      Execution.fork(...)
     end
   end
 end

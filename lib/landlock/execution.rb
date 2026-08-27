@@ -80,8 +80,8 @@ module Landlock
       capture_with(argv, raise_on_failure: true, **options)
     end
 
-    def capture_fork(**options, &block)
-      raise ArgumentError, "capture_fork requires a block" if !block
+    def fork(**options, &block)
+      raise ArgumentError, "fork requires a block" if !block
 
       Runner::Fork.call_block(**prepare_capture_options(**options), &block)
     rescue OutputTooLargeError => error
