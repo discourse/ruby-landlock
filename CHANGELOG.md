@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Add `Landlock.capture_fork` for capturing a sandboxed Ruby block in a forked child while reusing the existing timeout, output-limit, resource-limit, and process-group cleanup behavior.
+
 ## [0.4.1] - 2026-08-20
 
 ### Fixed

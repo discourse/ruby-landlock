@@ -80,6 +80,21 @@ module Landlock
       capture_with(argv, raise_on_failure: true, **options)
     end
 
+    def capture_fork(**options, &block)
+      raise ArgumentError, "capture_fork requires a block" if !block
+
+      Runner::Fork.call_block(**prepare_capture_options(**options), &block)
+    rescue OutputTooLargeError => error
+      result = error.result
+      raise CommandError.new(
+              error.message,
+              stdout: result&.stdout.to_s,
+              stderr: result&.stderr.to_s,
+              status: result&.status,
+              result:
+            )
+    end
+
     def capture_with(
       argv,
       read: nil,
@@ -105,30 +120,29 @@ module Landlock
       raise_on_failure:
     )
       argv = Validation.normalize_argv(argv).map(&:to_s)
-      ensure_landlock_supported!
-      max_output_bytes = Validation.validate_output_limit!(max_output_bytes)
-      timeout = Validation.validate_timeout!(timeout)
-      normalized_rlimits = Rlimits.normalize(rlimits)
-      env = Env.normalize(env)
-      policy =
-        prepare_policy(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, chdir:, allow_all_known:)
-      validate_capture_restriction!(**policy, seccomp_deny_network:, rlimits: normalized_rlimits)
-
-      result =
-        call_with_runner(
-          argv,
-          **policy,
+      options =
+        prepare_capture_options(
+          read:,
+          write:,
+          execute:,
+          connect_tcp:,
+          bind_tcp:,
+          paths:,
+          scope:,
           chdir:,
           env:,
           unsetenv_others:,
           close_others:,
+          allow_all_known:,
           timeout:,
           stdin:,
-          rlimits: normalized_rlimits,
+          rlimits:,
           seccomp_deny_network:,
           max_output_bytes:,
           truncate_output:
         )
+
+      result = call_with_runner(argv, **options)
 
       if raise_on_failure &&
            (result.timed_out? || !result.status.exited? || !success_status_codes.include?(result.status.exitstatus))
@@ -147,6 +161,50 @@ module Landlock
               status: result&.status,
               result:
             )
+    end
+
+    def prepare_capture_options(
+      read: nil,
+      write: nil,
+      execute: nil,
+      connect_tcp: nil,
+      bind_tcp: nil,
+      paths: nil,
+      scope: nil,
+      chdir: nil,
+      env: nil,
+      unsetenv_others: false,
+      close_others: true,
+      allow_all_known: false,
+      timeout: nil,
+      stdin: nil,
+      rlimits: {},
+      seccomp_deny_network: false,
+      max_output_bytes: nil,
+      truncate_output: false
+    )
+      ensure_landlock_supported!
+      max_output_bytes = Validation.validate_output_limit!(max_output_bytes)
+      timeout = Validation.validate_timeout!(timeout)
+      rlimits = Rlimits.normalize(rlimits)
+      env = Env.normalize(env)
+      policy =
+        prepare_policy(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, chdir:, allow_all_known:)
+      validate_capture_restriction!(**policy, seccomp_deny_network:, rlimits:)
+
+      {
+        **policy,
+        chdir:,
+        env:,
+        unsetenv_others:,
+        close_others:,
+        timeout:,
+        stdin:,
+        rlimits:,
+        seccomp_deny_network:,
+        max_output_bytes:,
+        truncate_output:
+      }
     end
 
     def spawn_with_runner(argv, **options)
