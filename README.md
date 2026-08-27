@@ -104,26 +104,6 @@ stdout, stderr, status = Landlock.capture(
 
 `Landlock.capture!` has the same return shape for successful commands, but raises `Landlock::CommandError` for unsuccessful statuses. The error also exposes `stdout`, `stderr`, `status`, and `result`.
 
-### Capturing a forked Ruby block
-
-`Landlock.capture_fork` forks the current Ruby process, applies the requested restrictions in the child, runs the block there, and returns a `Landlock::CaptureResult`. It is intended for applications that need to reuse initialized Ruby state without executing a new command:
-
-```ruby
-result = Landlock.capture_fork(
-  read: [input_path],
-  write: [File.dirname(output_path)],
-  timeout: 5,
-  rlimits: { cpu_seconds: 5, memory_bytes: 512 * 1024 * 1024 },
-  seccomp_deny_network: true
-) do
-  process_image(input_path, output_path)
-end
-```
-
-The block runs in a separate process. Its return value is discarded; write response data to stdout and inspect the capture result. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `capture_fork` accepts the capture options listed below except `success_status_codes:` and `failure_message:`, which only apply to `capture!`. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr. Pass `close_others: false` only when the block intentionally needs an inherited descriptor.
-
-Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `capture_fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
-
 `Landlock.capture` and `Landlock.capture_fork` require an actual restriction: provide Landlock rules, `seccomp_deny_network: true`, or `rlimits:`. This avoids accidentally running work completely unsandboxed when a dynamically built policy is empty. They also require Linux Landlock support and raise `Landlock::UnsupportedError` when unavailable; they do not fall back to running work unsandboxed.
 
 Pass `stdin:` when a tool should read from standard input instead of a file:
@@ -154,6 +134,26 @@ Capture options:
 - `unsetenv_others:` — clear the parent environment before applying `env:`.
 - `success_status_codes:` and `failure_message:` — `capture!` failure handling options.
 - `allow_all_known:` — when filesystem rules are present, handle all Landlock filesystem rights known to the running ABI so unlisted filesystem access is denied.
+
+## Capturing a forked Ruby block
+
+`Landlock.capture_fork` forks the current Ruby process, applies the requested restrictions in the child, runs the block there, and returns a `Landlock::CaptureResult`. It is intended for applications that need to reuse initialized Ruby state without executing a new command:
+
+```ruby
+result = Landlock.capture_fork(
+  read: [input_path],
+  write: [File.dirname(output_path)],
+  timeout: 5,
+  rlimits: { cpu_seconds: 5, memory_bytes: 512 * 1024 * 1024 },
+  seccomp_deny_network: true
+) do
+  process_image(input_path, output_path)
+end
+```
+
+The block runs in a separate process. Its return value is discarded; write response data to stdout and inspect the capture result. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `capture_fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr. Pass `close_others: false` only when the block intentionally needs an inherited descriptor.
+
+Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `capture_fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
 
 ## Restrict current process
 
