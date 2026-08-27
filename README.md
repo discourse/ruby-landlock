@@ -110,7 +110,7 @@ stdout, stderr, status = Landlock.capture(
 
 ```ruby
 result = Landlock.capture_fork(
-  read: [input_path, "/usr", "/lib", "/lib64"].select { |path| File.exist?(path) },
+  read: [input_path],
   write: [File.dirname(output_path)],
   timeout: 5,
   rlimits: { cpu_seconds: 5, memory_bytes: 512 * 1024 * 1024 },
