@@ -142,16 +142,17 @@ Capture options:
 ```ruby
 result = Landlock.fork(
   read: [input_path],
-  write: [File.dirname(output_path)],
   timeout: 5,
   rlimits: { cpu_seconds: 5, memory_bytes: 512 * 1024 * 1024 },
   seccomp_deny_network: true
-) do
-  process_image(input_path, output_path)
+) do |stdout, _stderr|
+  stdout.write(calculate_dominant_color(input_path))
 end
+
+color = result.stdout if result.success?
 ```
 
-The block runs in a separate process. Its return value is discarded; write response data to stdout and inspect the capture result. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr. Pass `close_others: false` only when the block intentionally needs an inherited descriptor.
+The block receives its child-side stdout and stderr streams. Write response data to stdout and diagnostics to stderr, then inspect them through the capture result in the parent. The block's return value is discarded. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr. Pass `close_others: false` only when the block intentionally needs an inherited descriptor.
 
 Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `Landlock.fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
 

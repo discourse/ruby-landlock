@@ -103,7 +103,7 @@ module Landlock
             Runner.exit_child!(error)
           end
 
-          block.call
+          block.call(STDOUT, STDERR)
           exit! 0
         rescue Exception => error
           Runner.exit_forked_block!(error)

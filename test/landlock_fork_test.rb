@@ -8,9 +8,9 @@ class LandlockForkTest < LandlockTestCase
 
     inherited = "ready"
     result =
-      Landlock.fork(rlimits: { open_files: 64 }) do
-        print inherited
-        warn "warning"
+      Landlock.fork(rlimits: { open_files: 64 }) do |stdout, stderr|
+        stdout.print inherited
+        stderr.puts "warning"
       end
 
     assert_equal "ready", result.stdout
@@ -26,6 +26,15 @@ class LandlockForkTest < LandlockTestCase
     assert_equal 1, result.status.exitstatus
     assert_match(/RuntimeError: failed/, result.stderr)
     refute_predicate result, :success?
+  end
+
+  def test_fork_discards_the_block_return_value
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    result = Landlock.fork(rlimits: { open_files: 64 }) { Object.new }
+
+    assert_empty result.stdout
+    assert_predicate result, :success?
   end
 
   def test_fork_enforces_timeout
