@@ -96,7 +96,13 @@ module Landlock
       end
 
       def call_block(timeout:, stdin:, max_output_bytes:, truncate_output:, enforce_landlock:, **options, &block)
-        capture_pipes(timeout:, stdin:, max_output_bytes:, truncate_output:) do
+        capture_pipes(
+          timeout:,
+          stdin:,
+          max_output_bytes:,
+          truncate_output:,
+          kill_process_group_on_parent_death: true
+        ) do
           begin
             prepare_forked_block!(**options, enforce_landlock:)
           rescue Exception => error
@@ -110,7 +116,13 @@ module Landlock
         end
       end
 
-      def capture_pipes(timeout:, stdin:, max_output_bytes:, truncate_output:)
+      def capture_pipes(
+        timeout:,
+        stdin:,
+        max_output_bytes:,
+        truncate_output:,
+        kill_process_group_on_parent_death: false
+      )
         stdout_reader, stdout_writer = IO.pipe
         stderr_reader, stderr_writer = IO.pipe
         stdin_reader, stdin_writer = IO.pipe
@@ -118,12 +130,17 @@ module Landlock
 
         pid =
           fork do
-            Landlock::Native.set_parent_death_signal!
-            exit! 1 if ::Process.ppid != parent_pid
+            # Arm group cleanup only after leaving the supervisor's process group.
+            ::Process.setpgrp
+            if kill_process_group_on_parent_death
+              Landlock::Native.arm_parent_death_process_group!(parent_pid)
+            else
+              Landlock::Native.set_parent_death_signal!
+              exit! 1 if ::Process.ppid != parent_pid
+            end
             stdout_reader.close
             stderr_reader.close
             stdin_writer.close
-            ::Process.setpgrp
             STDIN.reopen(stdin_reader)
             STDOUT.reopen(stdout_writer)
             STDERR.reopen(stderr_writer)

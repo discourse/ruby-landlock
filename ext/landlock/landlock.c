@@ -176,6 +176,50 @@ static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
 #endif
 }
 
+/* Runs after the worker has become its own process-group leader. */
+static void terminate_own_process_group(int signal_number) {
+  (void)signal_number;
+  kill(0, SIGKILL);
+  _exit(0);
+}
+
+static VALUE rb_ll_arm_parent_death_process_group(VALUE self, VALUE parent_pid_value) {
+#ifdef __linux__
+  pid_t parent_pid = NUM2PIDT(parent_pid_value);
+  /* Leave the first two application-visible realtime signals available to callers. */
+  int parent_death_signal = SIGRTMIN + 2;
+
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = terminate_own_process_group;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(parent_death_signal, &action, NULL) != 0) {
+    raise_syscall_error("sigaction(parent death process group)");
+  }
+
+  sigset_t signals;
+  sigemptyset(&signals);
+  sigaddset(&signals, parent_death_signal);
+  if (sigprocmask(SIG_UNBLOCK, &signals, NULL) != 0) {
+    raise_syscall_error("sigprocmask(parent death process group)");
+  }
+
+  if (prctl(PR_SET_PDEATHSIG, parent_death_signal) != 0) {
+    raise_syscall_error("prctl(PR_SET_PDEATHSIG)");
+  }
+
+  if (getppid() != parent_pid) {
+    terminate_own_process_group(parent_death_signal);
+  }
+
+  return Qtrue;
+#else
+  errno = ENOSYS;
+  raise_syscall_error("parent death process group");
+  return Qnil;
+#endif
+}
+
 static VALUE rb_ll_set_parent_death_signal(VALUE self) {
 #ifdef __linux__
   if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
@@ -219,6 +263,8 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
   rb_define_singleton_method(mLandlock, "_close_inherited_fds", rb_ll_close_inherited_fds, 0);
   rb_define_singleton_method(mLandlock, "_pidfd_open", rb_ll_pidfd_open, 1);
+  rb_define_singleton_method(mLandlock, "_arm_parent_death_process_group",
+                             rb_ll_arm_parent_death_process_group, 1);
   rb_define_singleton_method(mLandlock, "_set_parent_death_signal", rb_ll_set_parent_death_signal,
                              0);
   rb_define_singleton_method(mLandlock, "seccomp_deny_network!", rb_ll_seccomp_deny_network, 0);

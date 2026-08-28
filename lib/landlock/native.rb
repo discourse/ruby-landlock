@@ -39,6 +39,10 @@ module Landlock
       Landlock.__send__(:_pidfd_open, pid)
     end
 
+    def arm_parent_death_process_group!(parent_pid)
+      Landlock.__send__(:_arm_parent_death_process_group, parent_pid)
+    end
+
     def set_parent_death_signal!
       Landlock.__send__(:_set_parent_death_signal)
     end

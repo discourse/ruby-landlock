@@ -152,6 +152,55 @@ class LandlockForkTest < LandlockTestCase
     end
   end
 
+  def test_fork_descendants_exit_with_their_supervisor
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    supervisor_pid = nil
+    descendant_pid = nil
+
+    Dir.mktmpdir do |directory|
+      pid_path = File.join(directory, "descendant.pid")
+      fork_options = { write: [directory], close_others: false }
+      fork_options[:scope] = [:signal] if Landlock.abi_version >= 6
+      supervisor_pid =
+        fork do
+          Landlock.fork(**fork_options) do
+            # A nested Ruby fork needs the runtime descriptors inherited by the worker.
+            fork do
+              contents = [Process.pid, Process.ppid, Process.getpgrp].join(":")
+              File.write("#{pid_path}.tmp", contents)
+              File.rename("#{pid_path}.tmp", pid_path)
+              sleep 30
+            end
+            sleep 30
+          end
+        end
+
+      descendant_pid, worker_pid, process_group =
+        Timeout.timeout(2) do
+          loop do
+            break File.read(pid_path).split(":").map { |value| Integer(value) } if File.size?(pid_path)
+
+            sleep 0.01
+          end
+        end
+
+      assert_equal worker_pid, process_group, "descendant did not inherit the worker process group"
+
+      Process.kill("KILL", supervisor_pid)
+      Process.waitpid(supervisor_pid)
+      supervisor_pid = nil
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+      sleep 0.01 while process_alive?(descendant_pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+      refute process_alive?(descendant_pid), "forked descendant survived its supervisor"
+    end
+  ensure
+    kill_process_if_alive(supervisor_pid) if supervisor_pid
+    kill_process_if_alive(descendant_pid) if descendant_pid
+  end
+
   def test_fork_applies_the_filesystem_policy
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -240,7 +289,7 @@ class LandlockForkTest < LandlockTestCase
   def process_alive?(pid)
     Process.kill(0, pid)
     !File.read("/proc/#{pid}/stat").split.fetch(2).eql?("Z")
-  rescue Errno::ESRCH
+  rescue Errno::ESRCH, Errno::ENOENT
     false
   end
 end
