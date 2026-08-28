@@ -154,7 +154,18 @@ color = result.stdout if result.success?
 
 The block receives its child-side stdout and stderr streams. Write response data to stdout and diagnostics to stderr, then inspect them through the capture result in the parent. The block's return value is discarded. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`.
 
-`Landlock.fork` requires an actual restriction and Linux Landlock support; it never runs the block unsandboxed. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr, but native extensions may hold descriptors Ruby does not expose as `IO` objects. Pass `close_others: false` only when the child intentionally needs an inherited descriptor. Child setup failures exit 127.
+By default, `Landlock.fork` requires Linux Landlock support and raises `Landlock::UnsupportedError` before forking when the Landlock ABI is unavailable. A Linux caller that explicitly accepts running without Landlock filesystem, TCP, and scope enforcement can opt in to the fallback:
+
+```ruby
+result = Landlock.fork(
+  on_unsupported: :run_without_landlock,
+  timeout: 5,
+  rlimits: { memory_bytes: 512 * 1024 * 1024 },
+  seccomp_deny_network: true
+) { |stdout, _stderr| stdout.write(run_plugin) }
+```
+
+This fallback is used only when the Linux kernel has no Landlock ABI. It skips only Landlock policy enforcement; fork supervision, timeout handling, environment changes, descriptor closing, rlimits, output capture, and seccomp remain active. It is never selected implicitly, and non-Linux systems still raise `Landlock::UnsupportedError`. `Landlock.fork` requires an actual restriction. By default the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr, but native extensions may hold descriptors Ruby does not expose as `IO` objects. Pass `close_others: false` only when the child intentionally needs an inherited descriptor. Child setup failures exit 127.
 
 Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `Landlock.fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
 

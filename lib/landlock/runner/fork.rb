@@ -95,10 +95,10 @@ module Landlock
         end
       end
 
-      def call_block(timeout:, stdin:, max_output_bytes:, truncate_output:, **options, &block)
+      def call_block(timeout:, stdin:, max_output_bytes:, truncate_output:, enforce_landlock:, **options, &block)
         capture_pipes(timeout:, stdin:, max_output_bytes:, truncate_output:) do
           begin
-            prepare_forked_block!(**options)
+            prepare_forked_block!(**options, enforce_landlock:)
           rescue Exception => error
             Runner.exit_child!(error)
           end
@@ -198,13 +198,14 @@ module Landlock
         close_others:,
         rlimits:,
         seccomp_deny_network:,
+        enforce_landlock:,
         **policy
       )
         close_inherited_ios if close_others
         Dir.public_send(:chdir, chdir) if chdir
         ENV.clear if unsetenv_others
         env&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
-        Landlock.restrict!(**policy) if Policy.requested?(**policy)
+        Landlock.restrict!(**policy) if enforce_landlock && Policy.requested?(**policy)
         Landlock::Native.seccomp_deny_network! if seccomp_deny_network
         Rlimits.apply!(rlimits)
       end

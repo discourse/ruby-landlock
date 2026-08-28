@@ -80,10 +80,22 @@ module Landlock
       capture_with(argv, raise_on_failure: true, **options)
     end
 
-    def fork(**options, &block)
+    def fork(on_unsupported: :raise, **options, &block)
       raise ArgumentError, "fork requires a block" if !block
+      if !%i[raise run_without_landlock].include?(on_unsupported)
+        raise ArgumentError, "on_unsupported must be :raise or :run_without_landlock"
+      end
 
-      Runner::Fork.call_block(**prepare_capture_options(**options), &block)
+      enforce_landlock = Native.abi_version.positive?
+      if !enforce_landlock && (on_unsupported == :raise || !RUBY_PLATFORM.include?("linux"))
+        raise UnsupportedError, "Linux Landlock is unavailable"
+      end
+
+      Runner::Fork.call_block(
+        **prepare_capture_options(**options, require_landlock: enforce_landlock),
+        enforce_landlock:,
+        &block
+      )
     rescue OutputTooLargeError => error
       result = error.result
       raise CommandError.new(
@@ -181,9 +193,10 @@ module Landlock
       rlimits: {},
       seccomp_deny_network: false,
       max_output_bytes: nil,
-      truncate_output: false
+      truncate_output: false,
+      require_landlock: true
     )
-      ensure_landlock_supported!
+      ensure_landlock_supported! if require_landlock
       max_output_bytes = Validation.validate_output_limit!(max_output_bytes)
       timeout = Validation.validate_timeout!(timeout)
       rlimits = Rlimits.normalize(rlimits)

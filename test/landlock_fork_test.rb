@@ -3,6 +3,87 @@
 require_relative "test_helper"
 
 class LandlockForkTest < LandlockTestCase
+  def test_fork_raises_when_landlock_is_unsupported_by_default
+    Landlock.stub(:abi_version, 0) do
+      assert_raises(Landlock::UnsupportedError) { Landlock.fork(rlimits: { open_files: 64 }) { print "unreachable" } }
+    end
+  end
+
+  def test_fork_runs_without_landlock_when_explicitly_requested
+    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
+
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, "secret")
+      File.write(path, "secret")
+
+      Landlock.stub(:abi_version, 0) do
+        result =
+          Landlock.fork(
+            on_unsupported: :run_without_landlock,
+            read: [],
+            write: [],
+            timeout: 1,
+            env: {
+              "LANDLOCK_FORK_FALLBACK" => "enabled"
+            },
+            rlimits: {
+              open_files: 32
+            }
+          ) { print [File.read(path), ENV.fetch("LANDLOCK_FORK_FALLBACK"), Process.getrlimit(:NOFILE).first].join(":") }
+
+        assert_equal "secret:enabled:32", result.stdout
+        assert_predicate result, :success?
+      end
+    end
+  end
+
+  def test_fork_fallback_enforces_timeout
+    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
+
+    Landlock.stub(:abi_version, 0) do
+      result =
+        Landlock.fork(on_unsupported: :run_without_landlock, timeout: 0.01, rlimits: { open_files: 64 }) { sleep 30 }
+
+      assert_predicate result, :timed_out?
+      refute_predicate result, :success?
+    end
+  end
+
+  def test_fork_fallback_applies_seccomp
+    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
+
+    Landlock.stub(:abi_version, 0) do
+      result =
+        Landlock.fork(on_unsupported: :run_without_landlock, seccomp_deny_network: true) do
+          Socket.new(:INET, :STREAM)
+        rescue Errno::EPERM
+          print "denied"
+        end
+
+      assert_equal "denied", result.stdout
+      assert_predicate result, :success?
+    end
+  end
+
+  def test_fork_rejects_an_invalid_on_unsupported_value
+    error =
+      assert_raises(ArgumentError) do
+        Landlock.fork(on_unsupported: :ignore, rlimits: { open_files: 64 }) { print "unreachable" }
+      end
+
+    assert_equal "on_unsupported must be :raise or :run_without_landlock", error.message
+  end
+
+  def test_fork_does_not_fallback_on_non_linux
+    skip "Non-Linux behavior" if RUBY_PLATFORM.include?("linux")
+
+    Landlock.stub(:abi_version, 0) do
+      assert_raises(Landlock::UnsupportedError) do
+        Landlock.fork(on_unsupported: :run_without_landlock, rlimits: { open_files: 64 }) { print "unreachable" }
+      end
+    end
+  end
+
   def test_fork_captures_an_inherited_ruby_block
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -65,10 +146,7 @@ class LandlockForkTest < LandlockTestCase
       Process.waitpid(supervisor_pid)
 
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
-      while process_alive?(child_pid) &&
-              Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-        sleep 0.01
-      end
+      sleep 0.01 while process_alive?(child_pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
 
       refute process_alive?(child_pid)
     end
