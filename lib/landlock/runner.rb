@@ -16,8 +16,9 @@ module Landlock
       env ? [env, *argv_for_exec(argv), exec_options] : [*argv_for_exec(argv), exec_options]
     end
 
-    def exit_child!(error)
-      warn "Landlock child failed before exec: #{error.class}: #{error.message}"
+    def exit_child!(error, stderr: STDERR)
+      stderr.puts "Landlock child setup failed: #{error.class}: #{error.message}"
+      stderr.flush
     ensure
       exit! 127
     end

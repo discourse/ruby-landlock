@@ -91,8 +91,11 @@ module Landlock
         raise UnsupportedError, "Linux Landlock is unavailable"
       end
 
+      capture_options = prepare_capture_options(**options, require_landlock: enforce_landlock)
+      validate_fallback_restriction!(**capture_options) if !enforce_landlock
+
       Runner::Fork.call_block(
-        **prepare_capture_options(**options, require_landlock: enforce_landlock),
+        **capture_options,
         enforce_landlock:,
         &block
       )
@@ -268,6 +271,12 @@ module Landlock
       return if Policy.requested?(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
 
       raise ArgumentError, "empty Landlock policy: provide filesystem paths, TCP ports, or scopes"
+    end
+
+    def validate_fallback_restriction!(seccomp_deny_network:, rlimits:, **)
+      return if seccomp_deny_network || rlimits.any?
+
+      raise ArgumentError, "Landlock fallback requires seccomp_deny_network or rlimits"
     end
 
     def validate_capture_restriction!(

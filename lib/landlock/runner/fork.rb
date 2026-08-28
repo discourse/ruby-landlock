@@ -130,27 +130,31 @@ module Landlock
 
         pid =
           fork do
-            # Arm group cleanup only after leaving the supervisor's process group.
-            ::Process.setpgrp
-            if kill_process_group_on_parent_death
-              Landlock::Native.arm_parent_death_process_group!(parent_pid)
-            else
-              Landlock::Native.set_parent_death_signal!
-              exit! 1 if ::Process.ppid != parent_pid
-            end
-            stdout_reader.close
-            stderr_reader.close
-            stdin_writer.close
-            STDIN.reopen(stdin_reader)
-            STDOUT.reopen(stdout_writer)
-            STDERR.reopen(stderr_writer)
-            STDOUT.sync = true
-            STDERR.sync = true
-            stdin_reader.close
-            stdout_writer.close
-            stderr_writer.close
+            begin
+              # Arm group cleanup only after leaving the supervisor's process group.
+              ::Process.setpgrp
+              if kill_process_group_on_parent_death
+                Landlock::Native.arm_parent_death_process_group!(parent_pid)
+              else
+                Landlock::Native.set_parent_death_signal!
+                exit! 1 if ::Process.ppid != parent_pid
+              end
+              stdout_reader.close
+              stderr_reader.close
+              stdin_writer.close
+              STDIN.reopen(stdin_reader)
+              STDOUT.reopen(stdout_writer)
+              STDERR.reopen(stderr_writer)
+              STDOUT.sync = true
+              STDERR.sync = true
+              stdin_reader.close
+              stdout_writer.close
+              stderr_writer.close
 
-            yield
+              yield
+            rescue Exception => error
+              Runner.exit_child!(error, stderr: capture_error_stream(stderr_writer))
+            end
           end
 
         stdin_reader.close
@@ -180,6 +184,12 @@ module Landlock
           io&.close unless io.closed?
         rescue IOError
         end
+      end
+
+      def capture_error_stream(stderr_writer)
+        stderr_writer && !stderr_writer.closed? ? stderr_writer : STDERR
+      rescue IOError
+        STDERR
       end
 
       def setup_child!(

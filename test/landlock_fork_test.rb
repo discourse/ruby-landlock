@@ -37,6 +37,19 @@ class LandlockForkTest < LandlockTestCase
     end
   end
 
+  def test_fork_fallback_rejects_landlock_only_policy
+    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
+
+    Landlock.stub(:abi_version, 0) do
+      error =
+        assert_raises(ArgumentError) do
+          Landlock.fork(on_unsupported: :run_without_landlock, read: []) { print "unreachable" }
+        end
+
+      assert_equal "Landlock fallback requires seccomp_deny_network or rlimits", error.message
+    end
+  end
+
   def test_fork_fallback_enforces_timeout
     skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
 
@@ -106,6 +119,19 @@ class LandlockForkTest < LandlockTestCase
 
     assert_equal 1, result.status.exitstatus
     assert_match(/RuntimeError: failed/, result.stderr)
+    refute_predicate result, :success?
+  end
+
+  def test_fork_captures_child_bootstrap_errors
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    result = nil
+    Landlock::Native.stub(:arm_parent_death_process_group!, ->(*) { raise "bootstrap failed" }) do
+      result = Landlock.fork(rlimits: { open_files: 64 }) { print "unreachable" }
+    end
+
+    assert_equal 127, result.status.exitstatus
+    assert_equal "Landlock child setup failed: RuntimeError: bootstrap failed\n", result.stderr
     refute_predicate result, :success?
   end
 
