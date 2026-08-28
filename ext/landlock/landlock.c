@@ -5,6 +5,11 @@
 #include <signal.h>
 #include <string.h>
 
+#ifdef __linux__
+#include <dirent.h>
+#include <stdlib.h>
+#endif
+
 static VALUE mLandlock;
 static VALUE eLandlockError;
 static VALUE eSyscallError;
@@ -122,6 +127,41 @@ static VALUE rb_ll_close_fd(VALUE self, VALUE fd_value) {
   return Qnil;
 }
 
+static VALUE rb_ll_close_inherited_fds(VALUE self) {
+#ifdef SYS_close_range
+  if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) {
+    return Qtrue;
+  }
+#endif
+
+#ifdef __linux__
+  DIR *dir = opendir("/proc/self/fd");
+  if (dir) {
+    int dir_fd = dirfd(dir);
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+      char *end = NULL;
+      errno = 0;
+      long fd = strtol(entry->d_name, &end, 10);
+      if (errno == 0 && end && *end == '\0' && fd >= 3 && fd != dir_fd) {
+        close((int)fd);
+      }
+    }
+    closedir(dir);
+    return Qtrue;
+  }
+#endif
+
+  long max_fd = sysconf(_SC_OPEN_MAX);
+  if (max_fd < 0) {
+    max_fd = 1024;
+  }
+  for (long fd = 3; fd < max_fd; fd++) {
+    close((int)fd);
+  }
+  return Qtrue;
+}
+
 static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
 #ifdef SYS_pidfd_open
   int fd = syscall(SYS_pidfd_open, NUM2PIDT(pid_value), 0);
@@ -177,6 +217,7 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_add_net_rule", rb_ll_add_net_rule, 3);
   rb_define_singleton_method(mLandlock, "_restrict_self", rb_ll_restrict_self, 1);
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
+  rb_define_singleton_method(mLandlock, "_close_inherited_fds", rb_ll_close_inherited_fds, 0);
   rb_define_singleton_method(mLandlock, "_pidfd_open", rb_ll_pidfd_open, 1);
   rb_define_singleton_method(mLandlock, "_set_parent_death_signal", rb_ll_set_parent_death_signal,
                              0);

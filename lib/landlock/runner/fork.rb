@@ -220,6 +220,8 @@ module Landlock
             io.close
           rescue IOError
           end
+
+        Landlock::Native.close_inherited_fds!
       end
     end
   end

@@ -31,6 +31,10 @@ module Landlock
       Landlock.__send__(:_close_fd, fd)
     end
 
+    def close_inherited_fds!
+      Landlock.__send__(:_close_inherited_fds)
+    end
+
     def pidfd_open(pid)
       Landlock.__send__(:_pidfd_open, pid)
     end

@@ -200,6 +200,23 @@ class LandlockForkTest < LandlockTestCase
     writer&.close
   end
 
+  def test_fork_closes_inherited_raw_file_descriptors
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    fd = IO.sysopen(File::NULL)
+    result =
+      Landlock.fork(rlimits: { open_files: 64 }) do
+        IO.for_fd(fd, autoclose: false).stat
+        print "open"
+      rescue Errno::EBADF
+        print "closed"
+      end
+
+    assert_equal "closed", result.stdout
+  ensure
+    Landlock::Native.close_fd(fd) if fd
+  end
+
   def test_fork_enforces_output_limit
     skip "Landlock unsupported" unless Landlock.supported?
 
