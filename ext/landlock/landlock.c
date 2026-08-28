@@ -128,12 +128,8 @@ static VALUE rb_ll_close_fd(VALUE self, VALUE fd_value) {
 }
 
 static VALUE rb_ll_close_inherited_fds(VALUE self) {
-#ifdef SYS_close_range
-  if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) {
-    return Qtrue;
-  }
-#endif
-
+  /* The forked child keeps running Ruby, so interpreter-reserved descriptors
+   * must survive. This rules out close_range across the entire descriptor table. */
 #ifdef __linux__
   DIR *dir = opendir("/proc/self/fd");
   if (dir) {
@@ -143,7 +139,8 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
       char *end = NULL;
       errno = 0;
       long fd = strtol(entry->d_name, &end, 10);
-      if (errno == 0 && end && *end == '\0' && fd >= 3 && fd != dir_fd) {
+      if (errno == 0 && end && *end == '\0' && fd >= 3 && fd != dir_fd &&
+          !rb_reserved_fd_p((int)fd)) {
         close((int)fd);
       }
     }
@@ -157,7 +154,9 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
     max_fd = 1024;
   }
   for (long fd = 3; fd < max_fd; fd++) {
-    close((int)fd);
+    if (!rb_reserved_fd_p((int)fd)) {
+      close((int)fd);
+    }
   }
   return Qtrue;
 }

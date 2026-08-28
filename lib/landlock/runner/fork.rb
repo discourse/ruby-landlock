@@ -111,6 +111,10 @@ module Landlock
 
           block.call(STDOUT, STDERR)
           exit! 0
+        rescue SystemExit => error
+          exit! error.status
+        rescue SignalException
+          raise
         rescue Exception => error
           Runner.exit_forked_block!(error)
         end
@@ -152,6 +156,8 @@ module Landlock
               stderr_writer.close
 
               yield
+            rescue SystemExit, SignalException
+              raise
             rescue Exception => error
               Runner.exit_child!(error, stderr: capture_error_stream(stderr_writer))
             end

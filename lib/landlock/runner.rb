@@ -23,8 +23,9 @@ module Landlock
       exit! 127
     end
 
-    def exit_forked_block!(error)
-      warn "Landlock forked block failed: #{error.class}: #{error.message}"
+    def exit_forked_block!(error, stderr: STDERR)
+      stderr.puts "Landlock forked block failed: #{error.class}: #{error.message}"
+      stderr.flush
     ensure
       exit! 1
     end

@@ -122,6 +122,52 @@ class LandlockForkTest < LandlockTestCase
     refute_predicate result, :success?
   end
 
+  def test_fork_preserves_system_exit_status
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    [0, 7].each do |exit_status|
+      result = Landlock.fork(rlimits: { open_files: 64 }) { exit exit_status }
+
+      assert_predicate result.status, :exited?
+      assert_equal exit_status, result.status.exitstatus
+      assert_equal exit_status.zero?, result.success?
+      assert_empty result.stderr
+    end
+  end
+
+  def test_fork_preserves_signal_status
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    result =
+      Landlock.fork(rlimits: { open_files: 64 }) do
+        Process.kill("TERM", Process.pid)
+        sleep 1
+      end
+
+    assert_predicate result.status, :signaled?
+    assert_equal Signal.list.fetch("TERM"), result.status.termsig
+    assert_empty result.stderr
+    refute_predicate result, :success?
+  end
+
+  def test_fork_captures_block_errors_when_global_stderr_is_reassigned
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    original_stderr = $stderr
+    replacement_stderr = StringIO.new
+    result =
+      begin
+        $stderr = replacement_stderr
+        Landlock.fork(rlimits: { open_files: 64 }) { raise "failed" }
+      ensure
+        $stderr = original_stderr
+      end
+
+    assert_equal 1, result.status.exitstatus
+    assert_equal "Landlock forked block failed: RuntimeError: failed\n", result.stderr
+    assert_empty replacement_stderr.string
+  end
+
   def test_fork_captures_child_bootstrap_errors
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -150,6 +196,9 @@ class LandlockForkTest < LandlockTestCase
     result = Landlock.fork(timeout: 0.01, rlimits: { open_files: 64 }) { sleep 30 }
 
     assert_predicate result, :timed_out?
+    assert_predicate result.status, :signaled?
+    assert_equal Signal.list.fetch("TERM"), result.status.termsig
+    assert_empty result.stderr
     refute_predicate result, :success?
   end
 
