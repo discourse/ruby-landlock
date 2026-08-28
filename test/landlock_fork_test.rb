@@ -181,6 +181,22 @@ class LandlockForkTest < LandlockTestCase
     refute_predicate result, :success?
   end
 
+  def test_fork_timeout_during_child_bootstrap_preserves_signal_status
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    slow_setup = ->(**) { sleep 30 }
+    result = nil
+    Landlock::Runner::Fork.stub(:prepare_forked_block!, slow_setup) do
+      result = Landlock.fork(timeout: 0.01, rlimits: { open_files: 64 }) { raise "unreachable" }
+    end
+
+    assert_predicate result, :timed_out?
+    assert_predicate result.status, :signaled?
+    assert_equal Signal.list.fetch("TERM"), result.status.termsig
+    assert_empty result.stderr
+    refute_predicate result, :success?
+  end
+
   def test_fork_discards_the_block_return_value
     skip "Landlock unsupported" unless Landlock.supported?
 

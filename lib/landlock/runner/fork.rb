@@ -105,6 +105,8 @@ module Landlock
         ) do
           begin
             prepare_forked_block!(**options, enforce_landlock:)
+          rescue SystemExit, SignalException
+            raise
           rescue Exception => error
             Runner.exit_child!(error)
           end
