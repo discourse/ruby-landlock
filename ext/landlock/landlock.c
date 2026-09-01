@@ -132,33 +132,42 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
    * must survive. This rules out close_range across the entire descriptor table. */
 #ifdef __linux__
   DIR *dir = opendir("/proc/self/fd");
-  if (dir) {
-    int dir_fd = dirfd(dir);
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-      char *end = NULL;
-      errno = 0;
-      long fd = strtol(entry->d_name, &end, 10);
-      if (errno == 0 && end && *end == '\0' && fd >= 3 && fd != dir_fd &&
-          !rb_reserved_fd_p((int)fd)) {
-        close((int)fd);
-      }
-    }
-    closedir(dir);
-    return Qtrue;
+  if (!dir) {
+    raise_syscall_error("opendir(/proc/self/fd)");
   }
-#endif
 
-  long max_fd = sysconf(_SC_OPEN_MAX);
-  if (max_fd < 0) {
-    max_fd = 1024;
-  }
-  for (long fd = 3; fd < max_fd; fd++) {
-    if (!rb_reserved_fd_p((int)fd)) {
+  int dir_fd = dirfd(dir);
+  struct dirent *entry;
+  for (;;) {
+    errno = 0;
+    entry = readdir(dir);
+    if (!entry) {
+      if (errno != 0) {
+        int saved_errno = errno;
+        closedir(dir);
+        errno = saved_errno;
+        raise_syscall_error("readdir(/proc/self/fd)");
+      }
+      break;
+    }
+
+    char *end = NULL;
+    errno = 0;
+    long fd = strtol(entry->d_name, &end, 10);
+    if (errno == 0 && end && *end == '\0' && fd >= 3 && fd != dir_fd &&
+        !rb_reserved_fd_p((int)fd)) {
       close((int)fd);
     }
   }
+  if (closedir(dir) != 0) {
+    raise_syscall_error("closedir(/proc/self/fd)");
+  }
   return Qtrue;
+#else
+  errno = ENOSYS;
+  raise_syscall_error("opendir(/proc/self/fd)");
+  return Qnil;
+#endif
 }
 
 static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {

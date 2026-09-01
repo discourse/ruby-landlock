@@ -357,6 +357,32 @@ class LandlockForkTest < LandlockTestCase
     Landlock::Native.close_fd(fd) if fd
   end
 
+  def test_fork_fails_closed_when_procfs_cannot_be_read
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    Dir.mktmpdir do |allowed_directory|
+      reader, writer = IO.pipe
+      pid =
+        fork do
+          reader.close
+          Landlock.restrict!(read: [allowed_directory])
+          result = Landlock.fork(rlimits: { open_files: 64 }) { print "unreachable" }
+          writer.write(result.stderr)
+          exit! result.status.exitstatus
+        end
+      writer.close
+
+      stderr = reader.read
+      _, status = Process.wait2(pid)
+
+      assert_match(%r{/proc/self/fd}, stderr)
+      assert_equal 127, status.exitstatus
+    ensure
+      reader&.close
+      writer&.close unless writer&.closed?
+    end
+  end
+
   def test_fork_enforces_output_limit
     skip "Landlock unsupported" unless Landlock.supported?
 
