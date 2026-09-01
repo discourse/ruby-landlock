@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5] - 2026-09-01
+
 ### Added
 
 - Add `Landlock.fork` for running a sandboxed Ruby block in a supervised forked child.
