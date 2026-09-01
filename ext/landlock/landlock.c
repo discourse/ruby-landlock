@@ -2,7 +2,13 @@
 #include "landlock_native.h"
 #include "seccomp_deny_network.h"
 
+#include <signal.h>
 #include <string.h>
+
+#ifdef __linux__
+#include <dirent.h>
+#include <stdlib.h>
+#endif
 
 static VALUE mLandlock;
 static VALUE eLandlockError;
@@ -121,6 +127,49 @@ static VALUE rb_ll_close_fd(VALUE self, VALUE fd_value) {
   return Qnil;
 }
 
+static VALUE rb_ll_close_inherited_fds(VALUE self) {
+  /* The forked child keeps running Ruby, so interpreter-reserved descriptors
+   * must survive. This rules out close_range across the entire descriptor table. */
+#ifdef __linux__
+  DIR *dir = opendir("/proc/self/fd");
+  if (!dir) {
+    raise_syscall_error("opendir(/proc/self/fd)");
+  }
+
+  int dir_fd = dirfd(dir);
+  struct dirent *entry;
+  for (;;) {
+    errno = 0;
+    entry = readdir(dir);
+    if (!entry) {
+      if (errno != 0) {
+        int saved_errno = errno;
+        closedir(dir);
+        errno = saved_errno;
+        raise_syscall_error("readdir(/proc/self/fd)");
+      }
+      break;
+    }
+
+    char *end = NULL;
+    errno = 0;
+    long fd = strtol(entry->d_name, &end, 10);
+    if (errno == 0 && end && *end == '\0' && fd >= 3 && fd != dir_fd &&
+        !rb_reserved_fd_p((int)fd)) {
+      close((int)fd);
+    }
+  }
+  if (closedir(dir) != 0) {
+    raise_syscall_error("closedir(/proc/self/fd)");
+  }
+  return Qtrue;
+#else
+  errno = ENOSYS;
+  raise_syscall_error("opendir(/proc/self/fd)");
+  return Qnil;
+#endif
+}
+
 static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
 #ifdef SYS_pidfd_open
   int fd = syscall(SYS_pidfd_open, NUM2PIDT(pid_value), 0);
@@ -132,6 +181,62 @@ static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
   errno = ENOSYS;
   raise_syscall_error("pidfd_open");
   return Qnil;
+#endif
+}
+
+/* Runs after the worker has become its own process-group leader. */
+static void terminate_own_process_group(int signal_number) {
+  (void)signal_number;
+  kill(0, SIGKILL);
+  _exit(0);
+}
+
+static VALUE rb_ll_arm_parent_death_process_group(VALUE self, VALUE parent_pid_value) {
+#ifdef __linux__
+  pid_t parent_pid = NUM2PIDT(parent_pid_value);
+  /* Leave the first two application-visible realtime signals available to callers. */
+  int parent_death_signal = SIGRTMIN + 2;
+
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = terminate_own_process_group;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(parent_death_signal, &action, NULL) != 0) {
+    raise_syscall_error("sigaction(parent death process group)");
+  }
+
+  sigset_t signals;
+  sigemptyset(&signals);
+  sigaddset(&signals, parent_death_signal);
+  if (sigprocmask(SIG_UNBLOCK, &signals, NULL) != 0) {
+    raise_syscall_error("sigprocmask(parent death process group)");
+  }
+
+  if (prctl(PR_SET_PDEATHSIG, parent_death_signal) != 0) {
+    raise_syscall_error("prctl(PR_SET_PDEATHSIG)");
+  }
+
+  if (getppid() != parent_pid) {
+    terminate_own_process_group(parent_death_signal);
+  }
+
+  return Qtrue;
+#else
+  errno = ENOSYS;
+  raise_syscall_error("parent death process group");
+  return Qnil;
+#endif
+}
+
+static VALUE rb_ll_set_parent_death_signal(VALUE self) {
+#ifdef __linux__
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
+    raise_syscall_error("prctl(PR_SET_PDEATHSIG)");
+  }
+  return Qtrue;
+#else
+  errno = ENOSYS;
+  raise_syscall_error("prctl(PR_SET_PDEATHSIG)");
 #endif
 }
 
@@ -164,7 +269,12 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_add_net_rule", rb_ll_add_net_rule, 3);
   rb_define_singleton_method(mLandlock, "_restrict_self", rb_ll_restrict_self, 1);
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
+  rb_define_singleton_method(mLandlock, "_close_inherited_fds", rb_ll_close_inherited_fds, 0);
   rb_define_singleton_method(mLandlock, "_pidfd_open", rb_ll_pidfd_open, 1);
+  rb_define_singleton_method(mLandlock, "_arm_parent_death_process_group",
+                             rb_ll_arm_parent_death_process_group, 1);
+  rb_define_singleton_method(mLandlock, "_set_parent_death_signal", rb_ll_set_parent_death_signal,
+                             0);
   rb_define_singleton_method(mLandlock, "seccomp_deny_network!", rb_ll_seccomp_deny_network, 0);
 
   rb_define_const(mLandlock, "ACCESS_FS_EXECUTE", ULL2NUM(LANDLOCK_ACCESS_FS_EXECUTE));

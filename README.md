@@ -135,6 +135,42 @@ Capture options:
 - `success_status_codes:` and `failure_message:` — `capture!` failure handling options.
 - `allow_all_known:` — when filesystem rules are present, handle all Landlock filesystem rights known to the running ABI so unlisted filesystem access is denied.
 
+## Forking a Ruby block
+
+`Landlock.fork` is a supervised, synchronous fork. It forks the current Ruby process, applies the requested restrictions in the child, runs the block there, waits for it, and returns a `Landlock::CaptureResult`. It is intended for applications that need to reuse initialized Ruby state without executing a new command:
+
+```ruby
+result = Landlock.fork(
+  read: [input_path],
+  timeout: 5,
+  rlimits: { cpu_seconds: 5, memory_bytes: 512 * 1024 * 1024 },
+  seccomp_deny_network: true
+) do |stdout, _stderr|
+  stdout.write(calculate_dominant_color(input_path))
+end
+
+color = result.stdout if result.success?
+```
+
+The block receives its child-side stdout and stderr streams. Write response data to stdout and diagnostics to stderr, then inspect them through the capture result in the parent. The block's return value is discarded. An exception makes the child exit with status 1 and writes a diagnostic to stderr. `fork` accepts the capture options listed above except `success_status_codes:` and `failure_message:`, which only apply to `capture!`.
+
+By default, `Landlock.fork` requires Linux Landlock support and raises `Landlock::UnsupportedError` before forking when the Landlock ABI is unavailable. A Linux caller that explicitly accepts running without Landlock filesystem, TCP, and scope enforcement can opt in to the fallback:
+
+```ruby
+result = Landlock.fork(
+  on_unsupported: :run_without_landlock,
+  timeout: 5,
+  rlimits: { memory_bytes: 512 * 1024 * 1024 },
+  seccomp_deny_network: true
+) { |stdout, _stderr| stdout.write(run_plugin) }
+```
+
+This fallback is used only when the Linux kernel has no Landlock ABI. It skips only Landlock policy enforcement; fork supervision, timeout handling, environment changes, descriptor closing, rlimits, output capture, and seccomp remain active. It is never selected implicitly, and non-Linux systems still raise `Landlock::UnsupportedError`. When fallback is active, the call must include `seccomp_deny_network: true` or at least one `rlimits:` entry because Landlock rules are not effective restrictions in that mode. Timeout, environment handling, descriptor closing, and output limits do not satisfy this requirement. `Landlock.fork` requires an actual restriction. By default, the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr, then closes every other application descriptor numbered 3 or higher while preserving Ruby VM-reserved descriptors. It enumerates `/proc/self/fd` for this sweep and fails closed with setup status 127 if enumeration is unavailable or fails. Pass `close_others: false` only when the child intentionally needs an inherited descriptor. Child setup failures exit 127.
+
+The worker is a process-group leader and reserves Linux real-time signal `SIGRTMIN+2` for parent-death handling while the block runs. If the Ruby thread supervising the synchronous `Landlock.fork` call terminates, a native signal handler sends `SIGKILL` to the worker's process group. This terminates the worker and ordinary descendants that remain in that group. It does not cover descendants that create another process group or session, and the group-wide guarantee can be disabled by code that replaces or blocks the reserved signal, clears the parent-death signal, changes credentials in a way that clears it, or replaces the worker with `exec`. After `exec`, the reserved signal still terminates the worker by default, but the reset handler no longer kills its process group. This is process-lifecycle hardening, not a cgroup, PID namespace, or hostile-process containment boundary.
+
+Fork only from a process whose loaded libraries and runtime state are safe to use after `fork`. `Landlock.fork` cannot make an unsafe parent fork-safe, and the block must not depend on threads that exist only in the parent.
+
 ## Restrict current process
 
 This is irreversible for the current thread and its future children. Use `Landlock.exec` or `Landlock.spawn` unless you really mean it.
