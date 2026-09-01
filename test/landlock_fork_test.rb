@@ -221,26 +221,40 @@ class LandlockForkTest < LandlockTestCase
   def test_fork_child_exits_with_its_parent
     skip "Landlock unsupported" unless Landlock.supported?
 
+    supervisor_pid = nil
+    child_pid = nil
     Dir.mktmpdir do |directory|
       pid_path = File.join(directory, "child.pid")
       supervisor_pid =
         fork do
           Landlock.fork(write: [directory]) do
-            File.write(pid_path, Process.pid)
+            File.write("#{pid_path}.tmp", Process.pid)
+            File.rename("#{pid_path}.tmp", pid_path)
             sleep 30
           end
         end
 
-      sleep 0.01 until File.exist?(pid_path)
-      child_pid = Integer(File.read(pid_path))
+      child_pid =
+        Timeout.timeout(2) do
+          loop do
+            break Integer(File.read(pid_path)) if File.size?(pid_path)
+
+            sleep 0.01
+          end
+        end
       Process.kill("KILL", supervisor_pid)
       Process.waitpid(supervisor_pid)
+      supervisor_pid = nil
 
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
       sleep 0.01 while process_alive?(child_pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
 
       refute process_alive?(child_pid)
+      child_pid = nil
     end
+  ensure
+    kill_process_if_alive(supervisor_pid) if supervisor_pid
+    kill_process_if_alive(child_pid) if child_pid
   end
 
   def test_fork_descendants_exit_with_their_supervisor
