@@ -125,17 +125,18 @@ static VALUE rb_ll_close_fd(VALUE self, VALUE fd_value) {
   return Qnil;
 }
 
+#ifdef __linux__
+#define LL_DESCRIPTOR_DIRECTORY "/proc/self/fd"
+#else
+#define LL_DESCRIPTOR_DIRECTORY "/dev/fd"
+#endif
+
 static VALUE rb_ll_close_inherited_fds(VALUE self) {
   /* The forked child keeps running Ruby, so interpreter-reserved descriptors
    * must survive. This rules out close_range across the entire descriptor table. */
-#ifdef __linux__
-  const char *descriptor_directory = "/proc/self/fd";
-#else
-  const char *descriptor_directory = "/dev/fd";
-#endif
-  DIR *dir = opendir(descriptor_directory);
+  DIR *dir = opendir(LL_DESCRIPTOR_DIRECTORY);
   if (!dir) {
-    raise_syscall_error(descriptor_directory);
+    raise_syscall_error("opendir(" LL_DESCRIPTOR_DIRECTORY ")");
   }
 
   int dir_fd = dirfd(dir);
@@ -148,7 +149,7 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
         int saved_errno = errno;
         closedir(dir);
         errno = saved_errno;
-        raise_syscall_error(descriptor_directory);
+        raise_syscall_error("readdir(" LL_DESCRIPTOR_DIRECTORY ")");
       }
       break;
     }
@@ -162,7 +163,7 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
     }
   }
   if (closedir(dir) != 0) {
-    raise_syscall_error(descriptor_directory);
+    raise_syscall_error("closedir(" LL_DESCRIPTOR_DIRECTORY ")");
   }
   return Qtrue;
 }

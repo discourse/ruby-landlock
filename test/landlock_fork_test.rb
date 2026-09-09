@@ -430,6 +430,24 @@ class LandlockForkTest < LandlockTestCase
   end
 
   def test_fork_closes_inherited_raw_file_descriptors
+    skip "Landlock unsupported" unless Landlock.supported?
+
+    fd = IO.sysopen(File::NULL)
+    result =
+      Landlock.fork(read: []) do
+        IO.for_fd(fd, autoclose: false).stat
+        print "open"
+      rescue Errno::EBADF
+        print "closed"
+      end
+
+    assert_equal "closed", result.stdout
+    assert_predicate result, :success?
+  ensure
+    Landlock::Native.close_fd(fd) if fd
+  end
+
+  def test_fork_fallback_closes_inherited_raw_file_descriptors
     fd = IO.sysopen(File::NULL)
     result = nil
     Landlock.stub(:abi_version, 0) do
@@ -443,6 +461,7 @@ class LandlockForkTest < LandlockTestCase
     end
 
     assert_equal "closed", result.stdout
+    assert_predicate result, :success?
   ensure
     Landlock::Native.close_fd(fd) if fd
   end
@@ -465,7 +484,7 @@ class LandlockForkTest < LandlockTestCase
       stderr = reader.read
       _, status = Process.wait2(pid)
 
-      assert_match(%r{/proc/self/fd}, stderr)
+      assert_includes stderr, "opendir(/proc/self/fd) failed:"
       assert_equal 127, status.exitstatus
     ensure
       reader&.close
