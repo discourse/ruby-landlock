@@ -10,8 +10,6 @@ class LandlockForkTest < LandlockTestCase
   end
 
   def test_fork_runs_without_landlock_when_explicitly_requested
-    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
-
     Dir.mktmpdir do |directory|
       path = File.join(directory, "secret")
       File.write(path, "secret")
@@ -38,8 +36,6 @@ class LandlockForkTest < LandlockTestCase
   end
 
   def test_fork_fallback_rejects_landlock_only_policy
-    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
-
     Landlock.stub(:abi_version, 0) do
       error =
         assert_raises(ArgumentError) do
@@ -51,9 +47,9 @@ class LandlockForkTest < LandlockTestCase
   end
 
   def test_fork_fallback_enforces_timeout
-    skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
+    probe = -> { raise Landlock::SyscallError.new("landlock_create_ruleset", Errno::EPERM::Errno) }
 
-    Landlock.stub(:abi_version, 0) do
+    Landlock.stub(:abi_version, probe) do
       result =
         Landlock.fork(on_unsupported: :run_without_landlock, timeout: 0.01, rlimits: { open_files: 64 }) { sleep 30 }
 
@@ -65,7 +61,9 @@ class LandlockForkTest < LandlockTestCase
   def test_fork_fallback_applies_seccomp
     skip "Landlock fallback is Linux-only" if RUBY_PLATFORM !~ /linux/
 
-    Landlock.stub(:abi_version, 0) do
+    probe = -> { raise Landlock::SyscallError.new("landlock_create_ruleset", Errno::EPERM::Errno) }
+
+    Landlock.stub(:abi_version, probe) do
       result =
         Landlock.fork(on_unsupported: :run_without_landlock, seccomp_deny_network: true) do
           Socket.new(:INET, :STREAM)
@@ -78,6 +76,20 @@ class LandlockForkTest < LandlockTestCase
     end
   end
 
+  def test_fork_fallback_enforces_output_limit
+    Landlock.stub(:abi_version, 0) do
+      error =
+        assert_raises(Landlock::CommandError) do
+          Landlock.fork(on_unsupported: :run_without_landlock, rlimits: { open_files: 32 }, max_output_bytes: 4) do
+            print "output"
+          end
+        end
+
+      assert_equal "outp", error.stdout
+      assert_predicate error.result, :output_truncated?
+    end
+  end
+
   def test_fork_rejects_an_invalid_on_unsupported_value
     error =
       assert_raises(ArgumentError) do
@@ -87,14 +99,77 @@ class LandlockForkTest < LandlockTestCase
     assert_equal "on_unsupported must be :raise or :run_without_landlock", error.message
   end
 
-  def test_fork_does_not_fallback_on_non_linux
+  def test_fork_fallback_rejects_seccomp_on_non_linux
     skip "Non-Linux behavior" if RUBY_PLATFORM.include?("linux")
 
     Landlock.stub(:abi_version, 0) do
       assert_raises(Landlock::UnsupportedError) do
-        Landlock.fork(on_unsupported: :run_without_landlock, rlimits: { open_files: 64 }) { print "unreachable" }
+        Landlock.fork(on_unsupported: :run_without_landlock, seccomp_deny_network: true, rlimits: { open_files: 64 }) do
+          print "unreachable"
+        end
       end
     end
+  end
+
+  def test_fork_runs_with_execution_controls_when_the_abi_probe_raises
+    probe = -> { raise Landlock::SyscallError.new("landlock_create_ruleset", Errno::EPERM::Errno) }
+    reader, writer = IO.pipe
+
+    Landlock.stub(:abi_version, probe) do
+      result =
+        Landlock.fork(
+          on_unsupported: :run_without_landlock,
+          read: [],
+          paths: [{ path: __FILE__, rights: [:read_file] }],
+          env: {
+            LANDLOCK_FALLBACK: "child"
+          },
+          unsetenv_others: true,
+          stdin: "input",
+          rlimits: {
+            open_files: 32
+          },
+          timeout: 1,
+          max_output_bytes: 100
+        ) do
+          print [ENV.fetch("LANDLOCK_FALLBACK"), STDIN.read, Process.getrlimit(:NOFILE).first, writer.closed?].join(":")
+          warn "captured"
+        end
+
+      assert_equal "child:input:32:true", result.stdout
+      assert_equal "captured\n", result.stderr
+      assert_predicate result, :success?
+    end
+  ensure
+    reader&.close
+    writer&.close
+  end
+
+  def test_fork_raises_by_default_when_the_abi_probe_raises
+    probe = -> { raise Landlock::SyscallError.new("landlock_create_ruleset", Errno::EPERM::Errno) }
+
+    Landlock.stub(:abi_version, probe) do
+      assert_raises(Landlock::UnsupportedError) { Landlock.fork(rlimits: { open_files: 32 }) { print "unreachable" } }
+    end
+  end
+
+  def test_fork_does_not_fallback_when_policy_application_fails
+    failure = ->(**) { raise Landlock::SyscallError.new("landlock_restrict_self", Errno::EPERM::Errno) }
+    result = nil
+
+    Landlock.stub(:abi_version, 1) do
+      Landlock.stub(:restrict!, failure) do
+        result =
+          Landlock.fork(on_unsupported: :run_without_landlock, read: [], rlimits: { open_files: 32 }) do
+            print "unreachable"
+          end
+      end
+    end
+
+    assert_equal 127, result.status.exitstatus
+    assert_empty result.stdout
+    assert_match(/landlock_restrict_self/, result.stderr)
+    refute_predicate result, :success?
   end
 
   def test_fork_captures_an_inherited_ruby_block
@@ -359,7 +434,7 @@ class LandlockForkTest < LandlockTestCase
 
     fd = IO.sysopen(File::NULL)
     result =
-      Landlock.fork(rlimits: { open_files: 64 }) do
+      Landlock.fork(read: []) do
         IO.for_fd(fd, autoclose: false).stat
         print "open"
       rescue Errno::EBADF
@@ -367,6 +442,26 @@ class LandlockForkTest < LandlockTestCase
       end
 
     assert_equal "closed", result.stdout
+    assert_predicate result, :success?
+  ensure
+    Landlock::Native.close_fd(fd) if fd
+  end
+
+  def test_fork_fallback_closes_inherited_raw_file_descriptors
+    fd = IO.sysopen(File::NULL)
+    result = nil
+    Landlock.stub(:abi_version, 0) do
+      result =
+        Landlock.fork(on_unsupported: :run_without_landlock, rlimits: { open_files: 64 }) do
+          IO.for_fd(fd, autoclose: false).stat
+          print "open"
+        rescue Errno::EBADF
+          print "closed"
+        end
+    end
+
+    assert_equal "closed", result.stdout
+    assert_predicate result, :success?
   ensure
     Landlock::Native.close_fd(fd) if fd
   end
@@ -389,7 +484,7 @@ class LandlockForkTest < LandlockTestCase
       stderr = reader.read
       _, status = Process.wait2(pid)
 
-      assert_match(%r{/proc/self/fd}, stderr)
+      assert_includes stderr, "opendir(/proc/self/fd) failed:"
       assert_equal 127, status.exitstatus
     ensure
       reader&.close

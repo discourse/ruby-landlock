@@ -86,19 +86,13 @@ module Landlock
         raise ArgumentError, "on_unsupported must be :raise or :run_without_landlock"
       end
 
-      enforce_landlock = Native.abi_version.positive?
-      if !enforce_landlock && (on_unsupported == :raise || !RUBY_PLATFORM.include?("linux"))
-        raise UnsupportedError, "Linux Landlock is unavailable"
-      end
+      enforce_landlock = Landlock.supported?
+      raise UnsupportedError, "Linux Landlock is unavailable" if !enforce_landlock && on_unsupported == :raise
 
       capture_options = prepare_capture_options(**options, require_landlock: enforce_landlock)
       validate_fallback_restriction!(**capture_options) if !enforce_landlock
 
-      Runner::Fork.call_block(
-        **capture_options,
-        enforce_landlock:,
-        &block
-      )
+      Runner::Fork.call_block(**capture_options, enforce_landlock:, &block)
     rescue OutputTooLargeError => error
       result = error.result
       raise CommandError.new(
@@ -205,7 +199,18 @@ module Landlock
       rlimits = Rlimits.normalize(rlimits)
       env = Env.normalize(env)
       policy =
-        prepare_policy(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, chdir:, allow_all_known:)
+        prepare_policy(
+          read:,
+          write:,
+          execute:,
+          connect_tcp:,
+          bind_tcp:,
+          paths:,
+          scope:,
+          chdir:,
+          allow_all_known:,
+          abi: require_landlock ? Native.abi_version : 0
+        )
       validate_capture_restriction!(**policy, seccomp_deny_network:, rlimits:)
 
       {
@@ -251,10 +256,21 @@ module Landlock
       raise UnsupportedError, "Linux Landlock is unavailable" unless Native.abi_version.positive?
     end
 
-    def prepare_policy(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, chdir:, allow_all_known:)
+    def prepare_policy(
+      read:,
+      write:,
+      execute:,
+      connect_tcp:,
+      bind_tcp:,
+      paths:,
+      scope:,
+      chdir:,
+      allow_all_known:,
+      abi: Native.abi_version
+    )
       connect_tcp = connect_tcp.nil? ? nil : Validation.normalize_ports(connect_tcp, :connect_tcp)
       bind_tcp = bind_tcp.nil? ? nil : Validation.normalize_ports(bind_tcp, :bind_tcp)
-      read, write, execute, paths = validate_policy_paths!(read:, write:, execute:, paths:, chdir:)
+      read, write, execute, paths = validate_policy_paths!(read:, write:, execute:, paths:, chdir:, abi:)
       { read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known: }
     end
 
@@ -274,6 +290,10 @@ module Landlock
     end
 
     def validate_fallback_restriction!(seccomp_deny_network:, rlimits:, **)
+      if seccomp_deny_network && !RUBY_PLATFORM.include?("linux")
+        raise UnsupportedError, "seccomp_deny_network requires Linux"
+      end
+
       return if seccomp_deny_network || rlimits.any?
 
       raise ArgumentError, "Landlock fallback requires seccomp_deny_network or rlimits"
@@ -298,9 +318,8 @@ module Landlock
       raise ArgumentError, "empty capture policy: provide Landlock rules, seccomp_deny_network, or rlimits"
     end
 
-    def validate_policy_paths!(read:, write:, execute:, paths:, chdir:)
+    def validate_policy_paths!(read:, write:, execute:, paths:, chdir:, abi:)
       base = chdir ? File.expand_path(chdir) : Dir.pwd
-      abi = Native.abi_version
       read = read.nil? ? nil : Validation.validate_existing_paths(read, :read, chdir:)
       write = write.nil? ? nil : Validation.validate_existing_paths(write, :write, chdir:)
       execute = execute.nil? ? nil : Validation.validate_existing_paths(execute, :execute, chdir:)
