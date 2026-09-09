@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.5.1] - 2026-09-09
+
+### Fixed
+
+- Allow `Landlock.fork(on_unsupported: :run_without_landlock)` to fall back when the support check is blocked or unavailable, including on macOS.
+
 ## [0.5] - 2026-09-01
 
 ### Added
