@@ -139,9 +139,9 @@ module Landlock
             begin
               # Arm group cleanup only after leaving the supervisor's process group.
               ::Process.setpgrp
-              if kill_process_group_on_parent_death
+              if kill_process_group_on_parent_death && RUBY_PLATFORM.include?("linux")
                 Landlock::Native.arm_parent_death_process_group!(parent_pid)
-              else
+              elsif RUBY_PLATFORM.include?("linux")
                 Landlock::Native.set_parent_death_signal!
                 exit! 1 if ::Process.ppid != parent_pid
               end

@@ -5,10 +5,8 @@
 #include <signal.h>
 #include <string.h>
 
-#ifdef __linux__
 #include <dirent.h>
 #include <stdlib.h>
-#endif
 
 static VALUE mLandlock;
 static VALUE eLandlockError;
@@ -131,9 +129,13 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
   /* The forked child keeps running Ruby, so interpreter-reserved descriptors
    * must survive. This rules out close_range across the entire descriptor table. */
 #ifdef __linux__
-  DIR *dir = opendir("/proc/self/fd");
+  const char *descriptor_directory = "/proc/self/fd";
+#else
+  const char *descriptor_directory = "/dev/fd";
+#endif
+  DIR *dir = opendir(descriptor_directory);
   if (!dir) {
-    raise_syscall_error("opendir(/proc/self/fd)");
+    raise_syscall_error(descriptor_directory);
   }
 
   int dir_fd = dirfd(dir);
@@ -146,7 +148,7 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
         int saved_errno = errno;
         closedir(dir);
         errno = saved_errno;
-        raise_syscall_error("readdir(/proc/self/fd)");
+        raise_syscall_error(descriptor_directory);
       }
       break;
     }
@@ -160,14 +162,9 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
     }
   }
   if (closedir(dir) != 0) {
-    raise_syscall_error("closedir(/proc/self/fd)");
+    raise_syscall_error(descriptor_directory);
   }
   return Qtrue;
-#else
-  errno = ENOSYS;
-  raise_syscall_error("opendir(/proc/self/fd)");
-  return Qnil;
-#endif
 }
 
 static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
