@@ -116,6 +116,19 @@ class LandlockTestCase < Minitest::Test
     nil
   end
 
+  def assert_descendant_stopped(pid)
+    Timeout.timeout(2) do
+      loop do
+        break if File.exist?("/proc/#{pid}/stat") && File.read("/proc/#{pid}/stat").split.fetch(2) == "Z"
+        Process.kill(0, pid)
+        sleep 0.01
+      end
+    end
+    assert true
+  rescue Errno::ESRCH, Errno::ENOENT
+    assert true
+  end
+
   def refute_process_alive(pid)
     if File.exist?("/proc/#{pid}/stat")
       state = File.read("/proc/#{pid}/stat").split.fetch(2)

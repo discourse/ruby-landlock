@@ -3,6 +3,34 @@
 require_relative "test_helper"
 
 class LandlockCaptureTest < LandlockTestCase
+  def test_capture_cleans_up_descendants_after_normal_completion
+    skip "Landlock unsupported" unless Landlock.supported?
+    Dir.mktmpdir do |directory|
+      pidfile = File.join(directory, "descendant.pid")
+      script = <<~RUBY
+        child = Process.fork do
+          STDOUT.reopen(File::NULL, "w")
+          STDERR.reopen(File::NULL, "w")
+          sleep 30
+        end
+        File.write(ARGV.fetch(0), child)
+        puts "done"
+      RUBY
+
+      result =
+        Timeout.timeout(5) do
+          Landlock.capture([RbConfig.ruby, "--disable=gems", "-e", script, pidfile], rlimits: { open_files: 64 })
+        end
+
+      assert result.success?
+      assert_equal "done\n", result.stdout
+      refute result.timed_out?
+      assert_descendant_stopped(Integer(File.read(pidfile)))
+    ensure
+      kill_process_from_file(pidfile)
+    end
+  end
+
   def test_capture_returns_stdout_stderr_and_status
     skip "Landlock unsupported" unless Landlock.supported?
 
@@ -173,57 +201,63 @@ class LandlockCaptureTest < LandlockTestCase
     assert_predicate result.status, :success?
   end
 
-  def test_capture_fallback_kills_descendants_without_signaling_reaped_pid_when_deadline_expires_during_poll
+  def test_capture_fallback_cleans_up_before_reaping_when_deadline_expires_during_poll
     skip "Landlock unsupported" unless Landlock.supported?
 
     Dir.mktmpdir do |dir|
       pidfile = File.join(dir, "descendant.pid")
       pidfd_error = Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno)
       original_wait2 = Process.method(:wait2)
+      original_child_exited = Landlock::Native.method(:child_exited?)
+      polled = false
+      child_exited = ->(pid) do
+        polled = true
+        sleep 1.1
+        original_child_exited.call(pid)
+      end
       original_kill = Process.method(:kill)
       child_reaped = false
-      wait2 =
-        lambda do |*arguments|
-          sleep 0.15 if arguments.last == Process::WNOHANG
-          original_wait2.call(*arguments).tap { |result| child_reaped = true if result }
-        end
+      wait2 = lambda { |*arguments| original_wait2.call(*arguments).tap { |result| child_reaped = true if result } }
       kill =
         lambda do |signal, target|
-          flunk "capture signaled a reused PID after reaping the child" if child_reaped && target.positive?
+          flunk "capture signaled after reaping the child" if child_reaped
 
           original_kill.call(signal, target)
         end
 
       result = nil
       Landlock::Native.stub(:pidfd_open, ->(*) { raise pidfd_error }) do
-        Process.stub(:wait2, wait2) do
-          Process.stub(:kill, kill) do
-            result =
-              Landlock.capture(
-                [
-                  RbConfig.ruby,
-                  "--disable=gems",
-                  "-e",
-                  "pid = Process.fork { STDOUT.close; STDERR.close; sleep 30 }; File.write(ARGV.fetch(0), pid); STDOUT.close; STDERR.close",
-                  pidfile
-                ],
-                read: runtime_paths,
-                write: [dir],
-                execute: runtime_paths,
-                env: {
-                  "PATH" => ENV.fetch("PATH", "")
-                },
-                unsetenv_others: true,
-                timeout: 0.1
-              )
+        Landlock::Native.stub(:child_exited?, child_exited) do
+          Process.stub(:wait2, wait2) do
+            Process.stub(:kill, kill) do
+              result =
+                Landlock.capture(
+                  [
+                    RbConfig.ruby,
+                    "--disable=gems",
+                    "-e",
+                    "pid = Process.fork { STDOUT.reopen(File::NULL, 'w'); STDERR.reopen(File::NULL, 'w'); sleep 30 }; File.write(ARGV.fetch(0), pid); STDOUT.reopen(File::NULL, 'w'); STDERR.reopen(File::NULL, 'w')",
+                    pidfile
+                  ],
+                  read: runtime_paths,
+                  write: [dir, File::NULL],
+                  execute: runtime_paths,
+                  env: {
+                    "PATH" => ENV.fetch("PATH", "")
+                  },
+                  unsetenv_others: true,
+                  timeout: 1
+                )
+            end
           end
         end
       end
 
+      assert polled, "child exit was not checked by the polling fallback"
       assert_predicate result, :timed_out?
       assert_predicate result.status, :success?
       assert_path_exists pidfile
-      refute_process_alive Integer(File.read(pidfile))
+      assert_descendant_stopped(Integer(File.read(pidfile)))
     ensure
       kill_process_from_file(pidfile)
     end
