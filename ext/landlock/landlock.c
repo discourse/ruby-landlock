@@ -5,6 +5,7 @@
 
 #include <signal.h>
 #include <string.h>
+#include <sys/wait.h>
 
 #include <dirent.h>
 #include <stdlib.h>
@@ -169,6 +170,21 @@ static VALUE rb_ll_close_inherited_fds(VALUE self) {
   return Qtrue;
 }
 
+static VALUE rb_ll_child_exited(VALUE self, VALUE pid_value) {
+  siginfo_t info = {0};
+  int result;
+  do {
+    result = waitid(P_PID, NUM2PIDT(pid_value), &info, WEXITED | WNOHANG | WNOWAIT);
+  } while (result < 0 && errno == EINTR);
+  if (result < 0 && errno == ECHILD) {
+    return Qnil;
+  }
+  if (result < 0) {
+    raise_syscall_error("waitid");
+  }
+  return info.si_pid == 0 ? Qfalse : Qtrue;
+}
+
 static VALUE rb_ll_pidfd_open(VALUE self, VALUE pid_value) {
 #ifdef SYS_pidfd_open
   int fd = syscall(SYS_pidfd_open, NUM2PIDT(pid_value), 0);
@@ -278,6 +294,7 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_close_fd", rb_ll_close_fd, 1);
   rb_define_singleton_method(mLandlock, "_close_inherited_fds", rb_ll_close_inherited_fds, 0);
   rb_define_singleton_method(mLandlock, "_pidfd_open", rb_ll_pidfd_open, 1);
+  rb_define_singleton_method(mLandlock, "_child_exited", rb_ll_child_exited, 1);
   rb_define_singleton_method(mLandlock, "_arm_parent_death_process_group",
                              rb_ll_arm_parent_death_process_group, 1);
   rb_define_singleton_method(mLandlock, "_set_parent_death_signal", rb_ll_set_parent_death_signal,

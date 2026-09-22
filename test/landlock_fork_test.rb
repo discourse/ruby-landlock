@@ -3,6 +3,35 @@
 require_relative "test_helper"
 
 class LandlockForkTest < LandlockTestCase
+  def test_fork_cleans_up_descendants_after_normal_completion_without_pidfd_support
+    failure = ->(*) { raise Landlock::SyscallError.new("pidfd_open", Errno::ENOSYS::Errno) }
+    Dir.mktmpdir do |directory|
+      pidfile = File.join(directory, "descendant.pid")
+      result =
+        Landlock::Native.stub(:pidfd_open, failure) do
+          Timeout.timeout(5) do
+            Landlock.fork(on_unsupported: :run_without_landlock, rlimits: { open_files: 64 }) do
+              child =
+                Process.fork do
+                  STDOUT.reopen(File::NULL, "w")
+                  STDERR.reopen(File::NULL, "w")
+                  sleep 30
+                end
+              File.write(pidfile, child)
+              puts "done"
+            end
+          end
+        end
+
+      assert result.success?
+      assert_equal "done\n", result.stdout
+      refute result.timed_out?
+      assert_descendant_stopped(Integer(File.read(pidfile)))
+    ensure
+      kill_process_from_file(pidfile)
+    end
+  end
+
   def test_fork_raises_when_landlock_is_unsupported_by_default
     Landlock.stub(:abi_version, 0) do
       assert_raises(Landlock::UnsupportedError) { Landlock.fork(rlimits: { open_files: 64 }) { print "unreachable" } }

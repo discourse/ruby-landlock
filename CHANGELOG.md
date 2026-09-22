@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - Add `seccomp_deny_child_processes: true` to `capture`, `capture!`, and `fork` to deny child processes.
 
+### Fixed
+
+- Clean up remaining process-group members before `Landlock.capture` or `Landlock.fork` returns after normal completion.
+
 ## [0.5.1] - 2026-09-09
 
 ### Fixed

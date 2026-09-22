@@ -116,11 +116,7 @@ module Landlock
         end
       end
 
-      if deadline
-        status, timed_out = wait_for_pid_until(pid, deadline:)
-      else
-        status = wait_for_pid(pid)
-      end
+      status, timed_out = wait_for_pid_until(pid, deadline:)
 
       if timed_out
         drain_streams_until(
@@ -138,8 +134,8 @@ module Landlock
     end
 
     def wait_for_pid_until(pid, deadline:)
-      remaining = deadline - monotonic_time
-      if remaining <= 0
+      remaining = deadline ? deadline - monotonic_time : nil
+      if remaining && remaining <= 0
         terminate_process(pid)
         return wait_for_pid(pid), true
       end
@@ -147,11 +143,12 @@ module Landlock
       pidfd = Native.pidfd_open(pid)
       pid_monitor = IO.for_fd(pidfd, autoclose: false)
       readable, = IO.select([pid_monitor], nil, nil, remaining)
-      if !readable || monotonic_time >= deadline
+      if !readable || (deadline && monotonic_time >= deadline)
         terminate_process(pid)
         return wait_for_pid(pid), true
       end
 
+      terminate_process_group(pid) unless Native.child_exited?(pid).nil?
       [wait_for_pid(pid), false]
     rescue Landlock::SyscallError
       wait_for_pid_until_by_polling(pid, deadline:)
@@ -163,27 +160,22 @@ module Landlock
 
     def wait_for_pid_until_by_polling(pid, deadline:)
       loop do
-        remaining = deadline - monotonic_time
-        if remaining <= 0
+        remaining = deadline ? deadline - monotonic_time : nil
+        if remaining && remaining <= 0
           terminate_process(pid)
           return wait_for_pid(pid), true
         end
 
-        result = ::Process.wait2(pid, ::Process::WNOHANG)
-        if result
-          status = result.last
-          if monotonic_time >= deadline
-            terminate_process_group(pid)
-            return status, true
-          end
-
-          return status, false
+        exited = Native.child_exited?(pid)
+        return nil, false if exited.nil?
+        if exited
+          timed_out = deadline && monotonic_time >= deadline
+          terminate_process_group(pid)
+          return wait_for_pid(pid), !!timed_out
         end
 
-        IO.select(nil, nil, nil, [remaining, PID_WAIT_FALLBACK_INTERVAL_SECONDS].min)
+        IO.select(nil, nil, nil, [remaining, PID_WAIT_FALLBACK_INTERVAL_SECONDS].compact.min)
       end
-    rescue Errno::ECHILD
-      [nil, false]
     end
     private_class_method :wait_for_pid_until_by_polling
 
