@@ -104,7 +104,7 @@ stdout, stderr, status = Landlock.capture(
 
 `Landlock.capture!` has the same return shape for successful commands, but raises `Landlock::CommandError` for unsuccessful statuses. The error also exposes `stdout`, `stderr`, `status`, and `result`.
 
-`Landlock.capture` requires an actual restriction: provide Landlock rules, `seccomp_deny_network: true`, or `rlimits:`. This avoids accidentally running a command completely unsandboxed when a dynamically built policy is empty. It also requires Linux Landlock support and raises `Landlock::UnsupportedError` when unavailable; it does not fall back to running the command unsandboxed.
+`Landlock.capture` requires an actual restriction: provide Landlock rules, `seccomp_deny_network: true`, `seccomp_deny_child_processes: true`, or `rlimits:`. This avoids accidentally running a command completely unsandboxed when a dynamically built policy is empty. It also requires Linux Landlock support and raises `Landlock::UnsupportedError` when unavailable; it does not fall back to running the command unsandboxed.
 
 Pass `stdin:` when a tool should read from standard input instead of a file:
 
@@ -125,6 +125,7 @@ Capture options:
 - `connect_tcp:` and `bind_tcp:` — allowed TCP ports, with the same `nil` versus `[]` distinction. `[]` denies all TCP for that operation and requires ABI v4+; `nil` leaves TCP unrestricted.
 - `scope:` — Landlock ABI v6+ scopes such as `:signal` and `:abstract_unix_socket`.
 - `seccomp_deny_network:` — additionally deny common Linux network syscalls with seccomp. This is Linux-specific and intended as defense in depth.
+- `seccomp_deny_child_processes:` — deny process creation with seccomp. Defaults to `false`. This denies `fork`, `vfork`, and `clone` without `CLONE_THREAD`. `clone3` returns `ENOSYS` so compatible runtimes can fall back to `clone`. Runtimes that require `clone3` without fallback are unsupported. Filter installation failure prevents the command or block from running.
 - `rlimits:` — resource limits. Supported keys are `:cpu_seconds`, `:memory_bytes`, `:file_size_bytes`, `:open_files`, and `:processes`. Values must be non-negative integers.
 - `timeout:` — wall-clock timeout in seconds. On timeout capture terminates the process group and returns/raises with `result.timed_out?` true.
 - `max_output_bytes:` — combined stdout+stderr byte limit. With `truncate_output: false`, exceeding the limit raises `Landlock::CommandError` with the partial output captured before termination. With `truncate_output: true`, output is truncated and `result.output_truncated?` is true.
@@ -144,7 +145,8 @@ result = Landlock.fork(
   read: [input_path],
   timeout: 5,
   rlimits: { cpu_seconds: 5, memory_bytes: 512 * 1024 * 1024 },
-  seccomp_deny_network: true
+  seccomp_deny_network: true,
+  seccomp_deny_child_processes: true
 ) do |stdout, _stderr|
   stdout.write(calculate_dominant_color(input_path))
 end
@@ -167,7 +169,7 @@ result = Landlock.fork(
 
 This fallback is used when the Landlock ABI is unavailable, including when the capability probe fails or the platform does not support Landlock. Errors applying a policy after Landlock is detected still fail closed. Timeout handling, environment changes, descriptor closing, rlimits, and output capture remain active. Linux also retains parent-death cleanup and any requested seccomp restrictions. Non-Linux systems cannot provide parent-death cleanup and reject `seccomp_deny_network: true`; callers must omit that option and supply at least one `rlimits:` entry.
 
-Fallback is never selected implicitly. When active, the call must include `seccomp_deny_network: true` or at least one `rlimits:` entry because Landlock rules are not effective restrictions in that mode. Timeout, environment handling, descriptor closing, and output limits do not satisfy this requirement. By default, the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr, then closes every other application descriptor numbered 3 or higher while preserving Ruby VM-reserved descriptors. It enumerates `/proc/self/fd` on Linux and `/dev/fd` elsewhere, including macOS, and fails closed with setup status 127 if enumeration is unavailable or fails. Pass `close_others: false` only when the child intentionally needs an inherited descriptor. Child setup failures exit 127.
+Fallback is never selected implicitly. When active, the call must include `seccomp_deny_network: true`, `seccomp_deny_child_processes: true`, or at least one `rlimits:` entry because Landlock rules are not effective restrictions in that mode. Timeout, environment handling, descriptor closing, and output limits do not satisfy this requirement. By default, the child closes inherited Ruby `IO` objects other than stdin, stdout, and stderr, then closes every other application descriptor numbered 3 or higher while preserving Ruby VM-reserved descriptors. It enumerates `/proc/self/fd` on Linux and `/dev/fd` elsewhere, including macOS, and fails closed with setup status 127 if enumeration is unavailable or fails. Pass `close_others: false` only when the child intentionally needs an inherited descriptor. Child setup failures exit 127.
 
 The worker is a process-group leader and reserves Linux real-time signal `SIGRTMIN+2` for parent-death handling while the block runs. If the Ruby thread supervising the synchronous `Landlock.fork` call terminates, a native signal handler sends `SIGKILL` to the worker's process group. This terminates the worker and ordinary descendants that remain in that group. It does not cover descendants that create another process group or session, and the group-wide guarantee can be disabled by code that replaces or blocks the reserved signal, clears the parent-death signal, changes credentials in a way that clears it, or replaces the worker with `exec`. After `exec`, the reserved signal still terminates the worker by default, but the reset handler no longer kills its process group. This is process-lifecycle hardening, not a cgroup, PID namespace, or hostile-process containment boundary.
 

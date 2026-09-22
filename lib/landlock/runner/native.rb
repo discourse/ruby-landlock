@@ -81,6 +81,7 @@ module Landlock
         stdin:,
         rlimits:,
         seccomp_deny_network:,
+        seccomp_deny_child_processes: false,
         max_output_bytes:,
         truncate_output:
       )
@@ -105,6 +106,7 @@ module Landlock
             allow_all_known:,
             rlimits:,
             seccomp_deny_network:,
+            seccomp_deny_child_processes:,
             stdin_reader:,
             stdout_writer:,
             stderr_writer:,
@@ -156,6 +158,7 @@ module Landlock
         allow_all_known:,
         rlimits:,
         seccomp_deny_network:,
+        seccomp_deny_child_processes: false,
         stdin_reader: nil,
         stdout_writer: nil,
         stderr_writer: nil,
@@ -182,6 +185,7 @@ module Landlock
             allow_all_known:,
             rlimits:,
             seccomp_deny_network:,
+            seccomp_deny_child_processes:,
             close_others:
           )
         env ? ::Process.spawn(env, *spawn_args, spawn_options) : ::Process.spawn(*spawn_args, spawn_options)
@@ -199,6 +203,7 @@ module Landlock
         allow_all_known:,
         rlimits:,
         seccomp_deny_network:,
+        seccomp_deny_child_processes: false,
         close_others:
       )
         args = [helper_path]
@@ -215,6 +220,7 @@ module Landlock
         Array(rlimits).each { |key, value| args << "--rlimit" << "#{key}=#{value}" }
         args << "--allow-all-known" if allow_all_known
         args << "--seccomp-deny-network" if seccomp_deny_network
+        args << "--seccomp-deny-child-processes" if seccomp_deny_child_processes
         args << "--keep-fds" unless close_others
         args << "--"
         args.concat(argv.map(&:to_s))

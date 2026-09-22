@@ -42,7 +42,8 @@ class LandlockForkTest < LandlockTestCase
           Landlock.fork(on_unsupported: :run_without_landlock, read: []) { print "unreachable" }
         end
 
-      assert_equal "Landlock fallback requires seccomp_deny_network or rlimits", error.message
+      assert_equal "Landlock fallback requires seccomp_deny_network, seccomp_deny_child_processes, or rlimits",
+                   error.message
     end
   end
 
@@ -508,6 +509,117 @@ class LandlockForkTest < LandlockTestCase
     error = assert_raises(ArgumentError) { Landlock.fork(rlimits: { open_files: 64 }) }
 
     assert_equal "fork requires a block", error.message
+  end
+
+  def test_fork_denies_fork_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "fork") do |executable|
+      result = Landlock.fork(seccomp_deny_child_processes: true) { exec(executable) }
+      skip "fork syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_fork_denies_vfork_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "vfork") do |executable|
+      result = Landlock.fork(seccomp_deny_child_processes: true) { exec(executable) }
+      skip "vfork syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_fork_denies_clone_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "clone", arguments: "SIGCHLD, NULL, NULL, NULL, 0") do |executable|
+      result = Landlock.fork(seccomp_deny_child_processes: true) { exec(executable) }
+      skip "clone syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_fork_returns_enosys_for_clone3_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "clone3", arguments: "NULL, 0", expected_errno: "ENOSYS") do |executable|
+      result = Landlock.fork(seccomp_deny_child_processes: true) { exec(executable) }
+      skip "clone3 syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_fork_allows_threads_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    result = Landlock.fork(seccomp_deny_child_processes: true) { Thread.new { puts "thread" }.join }
+
+    assert result.success?, result.inspect
+    assert_equal "thread\n", result.stdout
+  end
+
+  def test_fork_denies_fork_from_threads_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    result =
+      Landlock.fork(seccomp_deny_child_processes: true) do
+        Thread
+          .new do
+            begin
+              child = Process.fork { exit! 0 }
+              Process.wait(child)
+            rescue Errno::EPERM
+              puts "denied"
+            end
+          end
+          .join
+      end
+
+    assert result.success?, result.inspect
+    assert_equal "denied\n", result.stdout
+  end
+
+  def test_fork_does_not_run_when_child_process_filter_installation_fails
+    skip "Landlock unsupported" unless Landlock.supported?
+    failure = -> { raise Landlock::SyscallError.new("seccomp", Errno::EPERM::Errno) }
+
+    result =
+      Landlock::Native.stub(:seccomp_deny_child_processes!, failure) do
+        Landlock.fork(seccomp_deny_child_processes: true) { puts "must not run" }
+      end
+
+    refute result.success?
+    assert_empty result.stdout
+    assert_match(/seccomp/, result.stderr)
+  end
+
+  def test_fork_rejects_seccomp_deny_child_processes_on_non_linux
+    skip "non-Linux required" if RUBY_PLATFORM.include?("linux")
+    assert_raises(Landlock::UnsupportedError) do
+      Landlock.fork(on_unsupported: :run_without_landlock, seccomp_deny_child_processes: true) { flunk "must not run" }
+    end
+  end
+
+  def test_fork_allows_child_processes_when_seccomp_deny_child_processes_is_omitted
+    result =
+      Landlock.fork(on_unsupported: :run_without_landlock, rlimits: { open_files: 64 }) do
+        child = Process.fork { puts "child" }
+        Process.wait(child)
+      end
+    assert result.success?, result.inspect
+    assert_equal "child\n", result.stdout
+  end
+
+  def test_fork_allows_child_processes_when_seccomp_deny_child_processes_is_false
+    result =
+      Landlock.fork(
+        on_unsupported: :run_without_landlock,
+        rlimits: {
+          open_files: 64
+        },
+        seccomp_deny_child_processes: false
+      ) do
+        child = Process.fork { puts "child" }
+        Process.wait(child)
+      end
+    assert result.success?, result.inspect
+    assert_equal "child\n", result.stdout
   end
 
   private

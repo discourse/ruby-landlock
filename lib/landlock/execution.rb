@@ -122,6 +122,7 @@ module Landlock
       stdin: nil,
       rlimits: {},
       seccomp_deny_network: false,
+      seccomp_deny_child_processes: false,
       max_output_bytes: nil,
       truncate_output: false,
       success_status_codes: [0],
@@ -147,6 +148,7 @@ module Landlock
           stdin:,
           rlimits:,
           seccomp_deny_network:,
+          seccomp_deny_child_processes:,
           max_output_bytes:,
           truncate_output:
         )
@@ -189,11 +191,15 @@ module Landlock
       stdin: nil,
       rlimits: {},
       seccomp_deny_network: false,
+      seccomp_deny_child_processes: false,
       max_output_bytes: nil,
       truncate_output: false,
       require_landlock: true
     )
       ensure_landlock_supported! if require_landlock
+      if seccomp_deny_child_processes && !RUBY_PLATFORM.include?("linux")
+        raise UnsupportedError, "seccomp_deny_child_processes requires Linux"
+      end
       max_output_bytes = Validation.validate_output_limit!(max_output_bytes)
       timeout = Validation.validate_timeout!(timeout)
       rlimits = Rlimits.normalize(rlimits)
@@ -211,7 +217,7 @@ module Landlock
           allow_all_known:,
           abi: require_landlock ? Native.abi_version : 0
         )
-      validate_capture_restriction!(**policy, seccomp_deny_network:, rlimits:)
+      validate_capture_restriction!(**policy, seccomp_deny_network:, seccomp_deny_child_processes:, rlimits:)
 
       {
         **policy,
@@ -223,6 +229,7 @@ module Landlock
         stdin:,
         rlimits:,
         seccomp_deny_network:,
+        seccomp_deny_child_processes:,
         max_output_bytes:,
         truncate_output:
       }
@@ -289,14 +296,14 @@ module Landlock
       raise ArgumentError, "empty Landlock policy: provide filesystem paths, TCP ports, or scopes"
     end
 
-    def validate_fallback_restriction!(seccomp_deny_network:, rlimits:, **)
+    def validate_fallback_restriction!(seccomp_deny_network:, seccomp_deny_child_processes:, rlimits:, **)
       if seccomp_deny_network && !RUBY_PLATFORM.include?("linux")
         raise UnsupportedError, "seccomp_deny_network requires Linux"
       end
 
-      return if seccomp_deny_network || rlimits.any?
+      return if seccomp_deny_network || seccomp_deny_child_processes || rlimits.any?
 
-      raise ArgumentError, "Landlock fallback requires seccomp_deny_network or rlimits"
+      raise ArgumentError, "Landlock fallback requires seccomp_deny_network, seccomp_deny_child_processes, or rlimits"
     end
 
     def validate_capture_restriction!(
@@ -309,13 +316,14 @@ module Landlock
       scope:,
       allow_all_known:,
       seccomp_deny_network:,
+      seccomp_deny_child_processes:,
       rlimits:
     )
       return if Policy.requested?(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
-      return if seccomp_deny_network
+      return if seccomp_deny_network || seccomp_deny_child_processes
       return if Array(rlimits).any?
 
-      raise ArgumentError, "empty capture policy: provide Landlock rules, seccomp_deny_network, or rlimits"
+      raise ArgumentError, "empty capture policy: provide Landlock rules, seccomp_deny_network, seccomp_deny_child_processes, or rlimits"
     end
 
     def validate_policy_paths!(read:, write:, execute:, paths:, chdir:, abi:)

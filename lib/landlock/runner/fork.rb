@@ -69,6 +69,7 @@ module Landlock
         stdin:,
         rlimits:,
         seccomp_deny_network:,
+        seccomp_deny_child_processes: false,
         max_output_bytes:,
         truncate_output:
       )
@@ -88,7 +89,8 @@ module Landlock
             close_others:,
             allow_all_known:,
             rlimits:,
-            seccomp_deny_network:
+            seccomp_deny_network:,
+            seccomp_deny_child_processes:
           )
         rescue Exception => error
           Runner.exit_child!(error)
@@ -215,13 +217,15 @@ module Landlock
         close_others:,
         allow_all_known:,
         rlimits:,
-        seccomp_deny_network:
+        seccomp_deny_network:,
+        seccomp_deny_child_processes: false
       )
         Dir.chdir(chdir) if chdir # rubocop:disable Discourse/NoChdir
         if Policy.requested?(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
           Landlock.restrict!(read:, write:, execute:, connect_tcp:, bind_tcp:, paths:, scope:, allow_all_known:)
         end
         Landlock::Native.seccomp_deny_network! if seccomp_deny_network
+        Landlock::Native.seccomp_deny_child_processes! if seccomp_deny_child_processes
         Rlimits.apply!(rlimits)
         Kernel.exec(*Runner.kernel_exec_args(argv, env, unsetenv_others:, close_others:))
       end
@@ -233,6 +237,7 @@ module Landlock
         close_others:,
         rlimits:,
         seccomp_deny_network:,
+        seccomp_deny_child_processes: false,
         enforce_landlock:,
         **policy
       )
@@ -242,6 +247,7 @@ module Landlock
         env&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
         Landlock.restrict!(**policy) if enforce_landlock && Policy.requested?(**policy)
         Landlock::Native.seccomp_deny_network! if seccomp_deny_network
+        Landlock::Native.seccomp_deny_child_processes! if seccomp_deny_child_processes
         Rlimits.apply!(rlimits)
       end
 

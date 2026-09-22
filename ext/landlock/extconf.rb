@@ -19,7 +19,7 @@ create_makefile("landlock/landlock")
 if RUBY_PLATFORM.include?("linux")
   helper = "landlock-safe-exec"
   helper_src = "$(srcdir)/bin/safe_exec_helper.c"
-  helper_headers = "$(srcdir)/landlock_native.h $(srcdir)/seccomp_deny_network.h"
+  helper_headers = "$(srcdir)/landlock_native.h $(srcdir)/seccomp_deny_network.h $(srcdir)/seccomp_deny_child_processes.h"
   helper_dest = "$(RUBYARCHDIR)/#{helper}"
 
   File.open("Makefile", "a") do |makefile|
@@ -27,7 +27,7 @@ if RUBY_PLATFORM.include?("linux")
 
       all: #{helper}
 
-      #{helper}: #{helper_src}
+      #{helper}: #{helper_src} #{helper_headers}
       \t$(CC) $(INCFLAGS) $(CPPFLAGS) $(CFLAGS) #{helper_src} -o #{helper}
 
       install: install-#{helper}

@@ -474,6 +474,125 @@ class LandlockCaptureTest < LandlockTestCase
     assert_equal [[:open_files, 64]], forked.fetch(1).fetch(:rlimits)
   end
 
+  def test_capture_denies_fork_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "fork") do |executable|
+      result = Landlock.capture([executable], seccomp_deny_child_processes: true)
+      skip "fork syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_capture_denies_vfork_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "vfork") do |executable|
+      result = Landlock.capture([executable], seccomp_deny_child_processes: true)
+      skip "vfork syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_capture_denies_clone_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "clone", arguments: "SIGCHLD, NULL, NULL, NULL, 0") do |executable|
+      result = Landlock.capture([executable], seccomp_deny_child_processes: true)
+      skip "clone syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_capture_returns_enosys_for_clone3_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    with_syscall_program(syscall: "clone3", arguments: "NULL, 0", expected_errno: "ENOSYS") do |executable|
+      result = Landlock.capture([executable], seccomp_deny_child_processes: true)
+      skip "clone3 syscall unavailable on this architecture" if result.status.exitstatus == 77
+      assert result.success?, result.inspect
+    end
+  end
+
+  def test_capture_allows_threads_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    result =
+      Landlock.capture(
+        [RbConfig.ruby, "--disable=gems", "-e", "Thread.new { puts 'thread' }.join"],
+        seccomp_deny_child_processes: true
+      )
+
+    assert result.success?, result.inspect
+    assert_equal "thread\n", result.stdout
+  end
+
+  def test_capture_denies_fork_from_threads_when_seccomp_deny_child_processes_is_true
+    skip "Landlock unsupported" unless Landlock.supported?
+    script = <<~RUBY
+      Thread.new do
+        begin
+          child = Process.fork { exit! 0 }
+          Process.wait(child)
+        rescue Errno::EPERM
+          puts "denied"
+        end
+      end.join
+    RUBY
+
+    result = Landlock.capture([RbConfig.ruby, "--disable=gems", "-e", script], seccomp_deny_child_processes: true)
+
+    assert result.success?, result.inspect
+    assert_equal "denied\n", result.stdout
+  end
+
+  def test_capture_does_not_run_when_child_process_filter_installation_fails
+    skip "Landlock unsupported" unless Landlock.supported?
+    failure = -> { raise Landlock::SyscallError.new("seccomp", Errno::EPERM::Errno) }
+
+    result =
+      Landlock::Native.stub(:seccomp_deny_child_processes!, failure) do
+        Landlock::Runner::Native.stub(:available?, false) do
+          Landlock.capture([RbConfig.ruby, "-e", "puts 'must not run'"], seccomp_deny_child_processes: true)
+        end
+      end
+
+    refute result.success?
+    assert_empty result.stdout
+    assert_match(/seccomp/, result.stderr)
+  end
+
+  def test_capture_rejects_seccomp_deny_child_processes_on_non_linux
+    skip "non-Linux required" if RUBY_PLATFORM.include?("linux")
+    assert_raises(Landlock::UnsupportedError) do
+      Landlock.capture([RbConfig.ruby, "-e", "puts 'must not run'"], seccomp_deny_child_processes: true)
+    end
+  end
+
+  def test_capture_allows_child_processes_when_seccomp_deny_child_processes_is_omitted
+    skip "Landlock unsupported" unless Landlock.supported?
+    result =
+      Landlock.capture(
+        [RbConfig.ruby, "--disable=gems", "-e", "pid = Process.fork { puts 'child' }; Process.wait(pid)"],
+        rlimits: {
+          open_files: 64
+        }
+      )
+
+    assert result.success?, result.inspect
+    assert_equal "child\n", result.stdout
+  end
+
+  def test_capture_allows_child_processes_when_seccomp_deny_child_processes_is_false
+    skip "Landlock unsupported" unless Landlock.supported?
+    result =
+      Landlock.capture(
+        [RbConfig.ruby, "--disable=gems", "-e", "pid = Process.fork { puts 'child' }; Process.wait(pid)"],
+        rlimits: {
+          open_files: 64
+        },
+        seccomp_deny_child_processes: false
+      )
+
+    assert result.success?, result.inspect
+    assert_equal "child\n", result.stdout
+  end
+
   def test_capture_seccomp_denies_network
     skip "Landlock unsupported" unless Landlock.supported?
 
