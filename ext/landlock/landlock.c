@@ -1,6 +1,7 @@
 #include "ruby.h"
 #include "landlock_native.h"
 #include "seccomp_deny_network.h"
+#include "seccomp_deny_child_processes.h"
 
 #include <signal.h>
 #include <string.h>
@@ -246,6 +247,14 @@ static VALUE rb_ll_seccomp_deny_network(VALUE self) {
   return Qtrue;
 }
 
+static VALUE rb_ll_seccomp_deny_child_processes(VALUE self) {
+  const char *error_message;
+  if (rb_landlock_seccomp_deny_child_processes(&error_message) != 0) {
+    raise_syscall_error(error_message);
+  }
+  return Qtrue;
+}
+
 void Init_landlock(void) {
   mLandlock = rb_define_module("Landlock");
 
@@ -274,6 +283,8 @@ void Init_landlock(void) {
   rb_define_singleton_method(mLandlock, "_set_parent_death_signal", rb_ll_set_parent_death_signal,
                              0);
   rb_define_singleton_method(mLandlock, "seccomp_deny_network!", rb_ll_seccomp_deny_network, 0);
+  rb_define_singleton_method(mLandlock, "seccomp_deny_child_processes!",
+                             rb_ll_seccomp_deny_child_processes, 0);
 
   rb_define_const(mLandlock, "ACCESS_FS_EXECUTE", ULL2NUM(LANDLOCK_ACCESS_FS_EXECUTE));
   rb_define_const(mLandlock, "ACCESS_FS_WRITE_FILE", ULL2NUM(LANDLOCK_ACCESS_FS_WRITE_FILE));

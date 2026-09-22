@@ -50,5 +50,9 @@ module Landlock
     def seccomp_deny_network!
       Landlock.seccomp_deny_network!
     end
+
+    def seccomp_deny_child_processes!
+      Landlock.seccomp_deny_child_processes!
+    end
   end
 end

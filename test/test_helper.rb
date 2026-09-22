@@ -61,6 +61,35 @@ class LandlockTestCase < Minitest::Test
     runner.call(argv.map(&:to_s), **defaults)
   end
 
+  def with_syscall_program(syscall:, arguments: nil, expected_errno: "EPERM")
+    source = <<~C
+      #include <errno.h>
+      #include <signal.h>
+      #include <sys/syscall.h>
+      #include <sys/wait.h>
+      #include <unistd.h>
+
+      int main(void) {
+      #ifdef SYS_#{syscall}
+        long result = syscall(SYS_#{syscall}#{", #{arguments}" if arguments});
+        if (result == 0) _exit(1);
+        if (result > 0) { waitpid(result, NULL, 0); return 1; }
+        return result == -1 && errno == #{expected_errno} ? 0 : 1;
+      #else
+        return 77;
+      #endif
+      }
+    C
+
+    Dir.mktmpdir do |directory|
+      source_path = File.join(directory, "test.c")
+      executable = File.join(directory, "test")
+      File.write(source_path, source)
+      assert system("cc", source_path, "-o", executable)
+      yield executable
+    end
+  end
+
   def root
     File.expand_path("..", __dir__)
   end

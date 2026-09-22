@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Add `seccomp_deny_child_processes: true` to `capture`, `capture!`, and `fork` to deny child processes.
+
 ## [0.5.1] - 2026-09-09
 
 ### Fixed

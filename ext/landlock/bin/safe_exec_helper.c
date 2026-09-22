@@ -1,5 +1,6 @@
 #include "../landlock_native.h"
 #include "../seccomp_deny_network.h"
+#include "../seccomp_deny_child_processes.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -549,6 +550,7 @@ int main(int argc, char **argv) {
   string_list read_paths = {0}, write_paths = {0}, execute_paths = {0}, rlimit_specs = {0};
   path_rule_list path_rules = {0};
   ull_list connect_ports = {0}, bind_ports = {0};
+  int seccomp_deny_child_processes = 0;
   int seccomp_deny_network = 0, allow_all_known = 0, close_others = 1;
   int handled_read = 0, handled_write = 0, handled_execute = 0;
   int handled_connect = 0, handled_bind = 0;
@@ -582,6 +584,8 @@ int main(int argc, char **argv) {
       chdir_path = require_arg(argc, argv, &i);
     } else if (strcmp(argv[i], "--rlimit") == 0) {
       string_list_push(&rlimit_specs, require_arg(argc, argv, &i));
+    } else if (strcmp(argv[i], "--seccomp-deny-child-processes") == 0) {
+      seccomp_deny_child_processes = 1;
     } else if (strcmp(argv[i], "--seccomp-deny-network") == 0) {
       seccomp_deny_network = 1;
     } else if (strcmp(argv[i], "--allow-all-known") == 0) {
@@ -614,6 +618,13 @@ int main(int argc, char **argv) {
   }
   for (size_t i = 0; i < rlimit_specs.len; i++) {
     apply_rlimit(rlimit_specs.items[i]);
+  }
+
+  if (seccomp_deny_child_processes) {
+    const char *error_message;
+    if (rb_landlock_seccomp_deny_child_processes(&error_message) != 0) {
+      die(error_message);
+    }
   }
 
   execvp(command_argv[0], command_argv);
